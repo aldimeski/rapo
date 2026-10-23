@@ -23,6 +23,7 @@ from . import journal
 from . import schedule
 from .control import Control, Parser
 from .runner import runner, get_runner_name
+from ..transfer.manager import manager as transfers
 
 
 LEASE_INTERVAL = 10
@@ -357,7 +358,14 @@ class Scheduler:
                                              limit=MISSED_LIMIT,
                                              before=border):
                 fires.append((moment, name, item['control_id']))
+        since = self.cursor
         self.cursor = now
+        # File transfers scheduled in rapo are performed here, never by the
+        # filetransfer-py script.
+        try:
+            transfers.fire(since, now)
+        except Exception:
+            logger.error()
         for moment, name, control_id in sorted(fires):
             # A pass that took longer than the lease renews it here instead of
             # at the next step, so a server that lost the lease while it was
@@ -452,6 +460,10 @@ class Scheduler:
                         'days deleted')
         except Exception:
             logger.error()
+        try:
+            transfers.maintain()
+        except Exception:
+            logger.error()
         logger.info('Maintenance performed')
 
     def _delay(self):
@@ -468,6 +480,13 @@ class Scheduler:
             fire = schedule.next_fire(item['schedule'], after)
             if fire:
                 wakes.append(fire[0].timestamp())
+        try:
+            wake = transfers.next_wake(after)
+        except Exception:
+            logger.error()
+            wake = None
+        if wake:
+            wakes.append(wake)
         return max(min(wakes)-now, 0)
 
     def _notify(self):

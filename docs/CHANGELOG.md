@@ -6,6 +6,19 @@ The full notes and upgrade steps of each release are in `migrations/<version>/` 
 
 ---
 
+## v0.8.8 — 2026-10-23
+
+New tables `rapo_transfer_param`, `rapo_transfer_schedule`, `rapo_transfer_run` (`migrations/v0.8.8/upgrade.sql`); new
+section `[TRANSFER]` of `rapo.ini`; new requirement `paramiko`.
+
+- **File transfers**: the logic of filetransfer-py runs inside rapo (`rapo/transfer/`): local or SFTP source, file mask with date tokens, file date, stable size, control file, gzip/gunzip, archive, log and e-mail on errors, from the same `.param` text ([docs/transfer.md](transfer.md)).
+- **Params as files or in the database**: a `.param` file in `[TRANSFER] param_dir` or a row of `rapo_transfer_param`; created in either, moved between them with the schedule kept.
+- **Scheduled by rapo**: the scheduler holding the lease starts the transfer, performed by rapo in its own process (`[TRANSFER] parallelism`), with runs and logs in `rapo_transfer_run`; `file-transfer.py` is not used.
+- **Crontab detection** (Linux): the crontab of the server user and the scripts it runs are read to find the params started with `file-transfer.py`; shown as started by the crontab with the script, the cron expression and the next start; a param started by both rapo and the crontab is flagged.
+- **Transfers page**: `/transfers` lists every param (place, started by, schedule, next start, last run) with run history; routes `get-transfers` ... `get-transfer-run` ([docs/api](api/README.md#file-transfers)).
+
+---
+
 ## v0.8.7 — 2026-10-22
 
 New table `rapo_api_token`, column `rapo_scheduler_event.requested_by`, recreated `rapo_config` triggers
@@ -426,3 +439,4 @@ in a `.venv` instead of PyPI; Python >= 3.10.
   - Shared API helper, run actions, schedule parser, sorting and column filters.
 - **REC algorithm options follow `rapo.ini`.** Opening a control no longer freezes the current defaults into its
   `rule_config`.
+

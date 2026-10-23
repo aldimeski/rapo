@@ -493,6 +493,82 @@ create table rapo_api_token (
   constraint rapo_api_token_hash_uk unique (token_hash)
 );
 
+-- File transfers (ported from filetransfer-py). A transfer is a .param file in
+-- [TRANSFER] param_dir, or its text kept here (rapo_transfer_param); either way
+-- its schedule is kept in rapo_transfer_schedule, by the param name, so moving
+-- a param between the folder and the database keeps it. Every run is a row of
+-- rapo_transfer_run: status I initiated (queued), S running, D done, E error,
+-- C canceled.
+create table rapo_transfer_param (
+  param_name   varchar2(128 char) not null,
+  param_text   clob not null,
+  description  varchar2(500 char),
+  created_date date default sysdate not null,
+  created_by   varchar2(256 char),
+  updated_date date default sysdate not null,
+  updated_by   varchar2(256 char),
+  constraint rapo_transfer_param_pk primary key (param_name)
+);
+
+create table rapo_transfer_schedule (
+  param_name      varchar2(128 char) not null,
+  schedule_config varchar2(4000 char),
+  status          varchar2(1 char) default 'Y' not null,
+  updated_date    date default sysdate not null,
+  updated_by      varchar2(256 char),
+  constraint rapo_transfer_schedule_pk primary key (param_name),
+  constraint rapo_transfer_schedule_ck check (status in ('Y', 'N'))
+);
+
+create sequence rapo_transfer_run_seq
+increment by 1
+start with 1
+nocache;
+
+create table rapo_transfer_run (
+  run_id         number default rapo_transfer_run_seq.nextval not null,
+  param_name     varchar2(128 char) not null,
+  trigger_type   varchar2(16 char) not null,
+  scheduled_time date,
+  queued_time    date default sysdate not null,
+  start_time     date,
+  end_time       date,
+  status         varchar2(1 char) default 'I' not null,
+  transferred    number(*, 0),
+  failed         number(*, 0),
+  message        varchar2(4000 char),
+  run_log        clob,
+  runner         varchar2(255 char),
+  requested_by   varchar2(256 char),
+  log_lines      number(*, 0),
+  constraint rapo_transfer_run_pk primary key (run_id)
+);
+
+create index rapo_transfer_run_param_ix on rapo_transfer_run (param_name, queued_time);
+create index rapo_transfer_run_time_ix on rapo_transfer_run (queued_time);
+
+-- The log of the runs of the params with LogDatabase:Y, one row per line; the
+-- newest [TRANSFER] log_max_lines lines of each param are kept. For such a run
+-- rapo_transfer_run.log_lines is the number of lines written.
+create sequence rapo_transfer_log_seq
+increment by 1
+start with 1
+nocache;
+
+create table rapo_transfer_log (
+  log_id     number default rapo_transfer_log_seq.nextval not null,
+  run_id     number(*, 0) not null,
+  param_name varchar2(128 char) not null,
+  line_no    number(*, 0) not null,
+  log_time   date,
+  log_level  varchar2(8 char),
+  message    varchar2(4000 char),
+  constraint rapo_transfer_log_pk primary key (log_id)
+);
+
+create index rapo_transfer_log_run_ix on rapo_transfer_log (run_id, line_no);
+create index rapo_transfer_log_param_ix on rapo_transfer_log (param_name, log_id);
+
 create or replace function rapo_prerun_control_hook (in_process_id number) return varchar2
 as
   v_control_name varchar2(20);

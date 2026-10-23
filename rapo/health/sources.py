@@ -181,7 +181,8 @@ def read_os(mounts=None):
     swap = psutil.swap_memory()
     try:
         load = os.getloadavg()[0]
-    except OSError:
+    except (OSError, AttributeError):
+        # Windows has no load average.
         load = None
     disks = read_disks(mounts or {})
     return {

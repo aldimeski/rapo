@@ -32,6 +32,7 @@ SECTIONS = collections.OrderedDict([
     ('DATASOURCES', 'PDI Core datasources and files pages'),
     ('HEALTH', 'Instance health: sampling, history and warning levels'),
     ('DASHBOARD', 'The Dashboard page: file log summary'),
+    ('TRANSFER', 'File transfers: param files, their schedule and crontab detection'),
 ])
 
 CATALOGUE = []
@@ -301,6 +302,29 @@ for _rule, _warn, _crit, _text in HEALTH_LEVELS:
 _add('DASHBOARD', 'file_summary_days', 'int', 90,
      'Days of the file log summary kept (filled by the maintenance)',
      minimum=31)
+
+# [TRANSFER]
+_add('TRANSFER', 'param_dir', 'path', None,
+     'Folder of the .param files of the file transfers; empty: only the '
+     'transfers kept in the database')
+_add('TRANSFER', 'parallelism', 'int', 2,
+     'Transfers executed at once on this server; more wait in a queue',
+     minimum=1)
+_add('TRANSFER', 'timeout', 'int', 3600,
+     'Seconds after which a running transfer is stopped; 0: no limit',
+     minimum=0)
+_add('TRANSFER', 'history_retention_days', 'int', 90,
+     'Days the history of transfer runs is kept', minimum=1)
+_add('TRANSFER', 'log_max_lines', 'int', 5000,
+     'Log lines kept in the database per param (LogDatabase:Y); the oldest '
+     'are deleted', minimum=100)
+_add('TRANSFER', 'crontab_scan', 'bool', True,
+     'Linux only: find the transfers started from the crontab of the server '
+     'user; ignored on Windows')
+_add('TRANSFER', 'crontab_scan_interval', 'int', 300,
+     'Seconds the crontab scan is reused before it is read again', minimum=10)
+_add('TRANSFER', 'script_name', 'text', 'file-transfer.py',
+     'Linux only: name of the transfer script the crontab scan looks for')
 
 INDEX = {(option.section, option.name): option for option in CATALOGUE}
 

@@ -182,8 +182,9 @@ class Database:
                 url = f'{vendor_name}:////{path}'
             settings = {}
         elif vendor_name == 'oracle':
-            username = urllib.parse.quote_plus(username)
-            password = urllib.parse.quote_plus(password)
+            # rapo.ini turns digits into numbers: a numeric password is text.
+            username = urllib.parse.quote_plus(str(username))
+            password = urllib.parse.quote_plus(str(password))
             credentials = f'{username}:{password}'
             address = f'{host}:{port}'
             identifier = sid if sid else f'?service_name={service_name}'

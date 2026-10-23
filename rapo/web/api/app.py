@@ -43,6 +43,11 @@ from ...core import views
 from ...core.control import Control, output_table_names
 from ...core.runner import runner
 from ...core.scheduler import scheduler, upcoming, next_fires
+from ...transfer import catalogue as transfer_catalogue
+from ...transfer import engine as transfer_engine
+from ...transfer import manager as transfer_manager
+from ...transfer import store as transfer_store
+from ...transfer.manager import manager as transfers
 from ...analysis import datasets
 from ...analysis import explain
 from ...analysis.explain_job import explainer
@@ -87,6 +92,7 @@ async def lifespan(app):
         logger.warning('Options of rapo.ini.example missing from '
                        f'rapo/options.py: {", ".join(missing)}')
     runner.listeners.append(events.poke_scheduler)
+    transfers.listeners.append(events.poke)
     scheduler.listeners.append(events.poke_scheduler)
     sessions.listeners.append(events.emit_analysis)
     explainer.listeners.append(events.emit_discrepancy)
@@ -101,6 +107,7 @@ async def lifespan(app):
     dashboard.file_data.listeners.append(events.emit_datasources)
     logs.cleaner.start()
     await asyncio.to_thread(runner.start)
+    await asyncio.to_thread(transfers.start)
     scheduler.start()
     sessions.start()
     explainer.start()
@@ -114,6 +121,7 @@ async def lifespan(app):
     await asyncio.to_thread(scanner.stop)
     await asyncio.to_thread(sessions.stop)
     await asyncio.to_thread(scheduler.stop)
+    await asyncio.to_thread(transfers.stop)
     await asyncio.to_thread(runner.stop)
     logs.cleaner.stop()
 
@@ -2485,6 +2493,180 @@ def remove_file(path):
     """Remove a temporary file once it is sent."""
     if os.path.exists(path):
         os.remove(path)
+
+
+def transfer_answer(call, *args, **kwargs):
+    """Run a file transfer call, answering its StoreError as HTTP error."""
+    try:
+        return call(*args, **kwargs)
+    except transfer_store.StoreError as error:
+        raise fastapi.HTTPException(status_code=error.status,
+                                    detail=str(error))
+    except transfer_engine.ConfigError as error:
+        raise fastapi.HTTPException(status_code=422, detail=str(error))
+
+
+@api.get('/get-transfers')
+def get_transfers(rescan: bool = False):
+    """Get every file transfer param: where it is kept (file or database),
+    how it is scheduled (in rapo or in the crontab, with the next start and
+    the scheduler's state) and its last run. `rescan` reads the crontab
+    again instead of reusing the last scan."""
+    answer = transfer_answer(transfers.table, rescan)
+    answer['scheduler'] = {'state': scheduler.status()['state'],
+                           'leader': scheduler.leader}
+    answer['manager'] = transfers.status()
+    return answer
+
+
+@api.get('/get-transfer-catalogue')
+def get_transfer_catalogue():
+    """Get the parameters a transfer can have, in the order they are written:
+    name, group, kind of value, default, whether it is required and its
+    description, which the param editor is built from."""
+    return {'groups': transfer_catalogue.GROUPS,
+            'parameters': transfer_catalogue.parameters()}
+
+
+@api.get('/get-transfer')
+def get_transfer(name: str):
+    """Get the text of a param, where it is kept, its description and its
+    schedule in rapo."""
+    name = transfer_answer(transfer_store.check_name, name)
+    text, source = transfer_answer(transfer_store.read, name)
+    planned = transfers.read_schedules().get(name)
+    return {'param_name': name, 'text': text, 'source': source,
+            'description': transfer_store.description(name)
+            if source == transfer_store.DATABASE else None,
+            'schedule': {'config': planned['config'],
+                         'enabled': planned['enabled']} if planned else None}
+
+
+@api.post('/validate-transfer')
+def validate_transfer(data: dict = fastapi.Body(...)):
+    """Check the text of a param and show what its date tokens expand to
+    now (`now`, "YYYY-MM-DD HH:MM:SS", tries another moment)."""
+    moment = dt.datetime.now()
+    if data.get('now'):
+        try:
+            moment = dt.datetime.strptime(data['now'], '%Y-%m-%d %H:%M:%S')
+        except ValueError as error:
+            raise fastapi.HTTPException(status_code=422, detail=str(error))
+    cfg = transfer_answer(transfer_engine.validate, data.get('text') or '',
+                          moment)
+    return {'reference_time': moment, 'file_mask': cfg.file_mask_raw,
+            'file_mask_expanded': cfg.file_mask_expanded,
+            'file_creation_date': cfg.date_spec_raw or None,
+            'file_creation_date_expanded': cfg.date_spec_expanded or None,
+            'input_dir': cfg.input_dir, 'output_dirs': cfg.output_dirs,
+            'sftp': cfg.sftp}
+
+
+@api.post('/save-transfer')
+def save_transfer(data: dict = fastapi.Body(...)):
+    """Save a param to a file in [TRANSFER] param_dir or to the database.
+
+    The body is {name, text, where (file or db), description, create}; a
+    new param is created with `create`, which refuses an existing name.
+    """
+    name = transfer_answer(
+        transfer_store.write, data.get('name'), data.get('text'),
+        data.get('where'), note=data.get('description'),
+        create=bool(data.get('create')))
+    transfers.invalidate()
+    return {'status': 200, 'param_name': name}
+
+
+@api.get('/check-move-transfer')
+def check_move_transfer(name: str, target: str):
+    """Get what moving a param to `file` or `db` changes: `warnings` need a
+    confirmation (`confirm` of move-transfer), `notes` only tell. Moved to a
+    file, a param loses LogDatabase, and one without LogDir and LogFile has no
+    logging afterwards."""
+    plan = transfer_answer(transfer_store.plan_move, name, target)
+    return {'warnings': plan['warnings'], 'notes': plan['notes']}
+
+
+@api.post('/move-transfer')
+def move_transfer(name: str, target: str, confirm: bool = False):
+    """Move a param to a file (`file`) or to the database (`db`); its
+    schedule stays. `409` while the move has warnings and `confirm` is not
+    set (see check-move-transfer)."""
+    transfer_answer(transfer_store.move, name, target, confirm)
+    transfers.invalidate()
+    return {'status': 200}
+
+
+@api.delete('/delete-transfer')
+def delete_transfer(name: str):
+    """Delete a param, wherever it is kept, with its schedule."""
+    name = transfer_answer(transfer_store.check_name, name)
+    if transfers.busy(name):
+        raise fastapi.HTTPException(
+            status_code=409, detail=f'Transfer {name} is running or waiting.')
+    transfer_answer(transfer_store.delete, name)
+    transfers.invalidate()
+    return {'status': 200}
+
+
+@api.post('/save-transfer-schedule')
+def save_transfer_schedule(data: dict = fastapi.Body(...)):
+    """Set the schedule of a param in rapo, the units of a control schedule
+    ({mday, wday, hour, min, sec}); no units: not scheduled in rapo. The
+    transfer is then performed by rapo, so it must not also be started from
+    the crontab."""
+    units = data.get('schedule')
+    config_json = None
+    if units:
+        try:
+            config_json = transfer_manager.schedule_json(units)
+            schedule.parse(config_json)
+        except (ValueError, TypeError, AttributeError) as error:
+            raise fastapi.HTTPException(status_code=422, detail=str(error))
+    transfer_answer(transfer_store.write_schedule, data.get('name'),
+                    config_json, bool(data.get('enabled', True)))
+    transfers.invalidate()
+    scheduler.refresh()
+    return {'status': 200}
+
+
+@api.post('/run-transfer')
+def run_transfer(name: str):
+    """Initiate a run of a param and queue it for execution."""
+    run_id = transfer_answer(transfers.submit, name, transfer_manager.MANUAL,
+                             requested_by=auth.current().requester)
+    events.poke()
+    return {'status': 200, 'run_id': run_id}
+
+
+@api.post('/cancel-transfer')
+def cancel_transfer(run_id: int):
+    """Cancel a waiting or running transfer of this server."""
+    if not transfers.cancel(run_id):
+        raise fastapi.HTTPException(
+            status_code=404,
+            detail='Not a run of this server, or it has finished.')
+    events.poke()
+    return {'status': 200}
+
+
+@api.get('/get-transfer-runs')
+def get_transfer_runs(name: str | None = None,
+                      limit: int = fastapi.Query(100, ge=1, le=1000)):
+    """Get the runs of file transfers, latest first, without their log."""
+    return transfer_answer(transfer_store.read_runs, name, limit)
+
+
+@api.get('/get-transfer-run')
+def get_transfer_run(run_id: int):
+    """Get one transfer run with its log (`run_log`). For a param with
+    LogDatabase:Y the log is read from rapo_transfer_log, and `log_trimmed`
+    tells that its oldest lines were deleted to keep the newest of the param."""
+    row = transfer_answer(transfer_store.read_run, run_id)
+    if not row:
+        raise fastapi.HTTPException(status_code=404,
+                                    detail=f'Transfer run {run_id} not found')
+    return row
 
 
 scopes.check_routes(api)

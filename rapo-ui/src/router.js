@@ -74,6 +74,12 @@ const router = createRouter({
       component: SchedulerPage,
     },
     {
+      name: "transfers",
+      path: "/transfers",
+      meta: { title: "Transfers", scope: ["datasources", "view"], hideSearch: true },
+      component: () => import(/* webpackChunkName: "transfers" */ "./components/TransfersPage.vue"),
+    },
+    {
       name: "edit-control",
       path: "/edit-control/:controlId?",
       meta: { title: "Control", scope: ["controls", "view"], hideSearch: true },
@@ -158,7 +164,7 @@ const router = createRouter({
 });
 
 // The pages in the order a token without the Dashboard is sent to the first it may open.
-const LANDING_PAGES = ["dashboard", "results", "controls", "kpi-types", "scheduler", "files", "datasources"];
+const LANDING_PAGES = ["dashboard", "results", "controls", "kpi-types", "scheduler", "transfers", "files", "datasources"];
 
 router.beforeEach(function (to, from, next) {
   if (!store.state.tokenIsValid && to.name !== "token") {

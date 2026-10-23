@@ -1383,6 +1383,81 @@ The next fires of a schedule configuration, without saving it.
 
 Answers a list of datetimes, `[]` for a schedule that never fires. `422` when the configuration cannot be parsed.
 
+### File transfers
+
+The file transfers of `rapo/transfer/` (see [docs/transfer.md](../transfer.md)). Reads need *Datasources: View*, the
+routes that change a param or its schedule *Datasources: Edit*, `run-transfer` and `cancel-transfer` *Files: Operate*.
+A failed request answers its `detail` with `400` (a bad name or value), `404` (no such param or run), `409` (the name is
+taken, the param is in both places, or it is running or waiting), `422` (the param does not validate) or `503` (the
+transfer tables are missing: run `migrations/v0.8.8/upgrade.sql`).
+
+#### `GET /api/get-transfers`
+Every param with where it is kept and how it is started. With `rescan=true` the crontab is read again instead of
+reusing the last scan (`[TRANSFER] crontab_scan_interval`). The answer:
+
+* `params` - per param `param_name`, `source` (`file`, `db`, `both` when the name is in both places, `external` when
+  only the crontab knows it), `description`, `modified`, `size`, `scheduling` (`rapo`, `crontab`, `both` or null),
+  `rapo` (null, or `{config, enabled, scheduled, next_fire}`: the schedule units JSON of `schedule_config`),
+  `crontab` (a list of `{cron, command, script, param_path, next_fire, user}`; `script` is null when the cron command
+  calls the transfer script itself), `running` (a run waits or runs on this server) and `last_run`;
+* `param_dir`, `database_available`, `crontab_scan`, `crontab_supported` (the host is Linux);
+* `scheduler` - `{state, leader}` as `scheduler-status` reports them; `manager` - `{runner, active, capacity, queued,
+  running}` of this server's transfer manager.
+
+#### `GET /api/get-transfer-catalogue`
+The parameters a transfer can have, in the order they are written, which the param editor is built from: `groups` and
+`parameters`, each `{name, group, kind (flag, choice, path, paths, regex, date, number, text), default, required,
+choices, description, storage, ignored_when}`. `storage` is `db` for a parameter only a param kept in the database can
+have (`LogDatabase`); `ignored_when` is `[parameter, value]` while which the parameter has no effect (`LogDir` and
+`LogFile` while `LogDatabase` is `Y`).
+
+#### `GET /api/get-transfer`
+`name` - the `text` of a param, its `source`, its `description` (database params) and its `schedule` in rapo
+(`{config, enabled}` or null).
+
+#### `POST /api/validate-transfer`
+Body `{text, now}`: checks the text of a param without saving it and answers what the date tokens of `FileMask` and
+`FileCreationDate` expand to at `now` ("YYYY-MM-DD HH:MM:SS", default the current time), with the directories.
+`422` names the first problem.
+
+#### `POST /api/save-transfer`
+Body `{name, text, where, description, create}`: saves a param to a `file` (in `[TRANSFER] param_dir`) or to the
+database (`db`). `create` refuses a name that exists. A name that exists in the other place is refused (`409`): move
+it instead. The text is validated first.
+
+#### `GET /api/check-move-transfer`
+`name`, `target`: what moving a param changes. `warnings` need a confirmation: a param moved from the database to a
+file that has no `LogDir` and `LogFile` has no logging there, and `LogMode` becomes `None`. `notes` only tell: a param
+moved to a file loses `LogDatabase`.
+
+#### `POST /api/move-transfer`
+`name`, `target` (`file` or `db`), `confirm` (false): moves a param, keeping its schedule. `409` while the move has
+warnings (see `check-move-transfer`) and `confirm` is not true.
+
+#### `DELETE /api/delete-transfer`
+`name`: deletes a param (its file or its row) and its schedule; the history of its runs stays. `409` while a run
+waits or runs.
+
+#### `POST /api/save-transfer-schedule`
+Body `{name, schedule, enabled}`: `schedule` holds the units `{mday, wday, hour, min, sec}` of a control schedule
+(see `schedule_config`), or is null for no schedule in rapo. The scheduler of the server holding the lease starts the
+transfer, rapo performs it.
+
+#### `POST /api/run-transfer`
+`name`: initiates a run and queues it; answers `{run_id}`. `409` when the param already waits or runs.
+
+#### `POST /api/cancel-transfer`
+`run_id`: cancels a waiting or running transfer of this server; `404` for a run of another server or one that ended.
+
+#### `GET /api/get-transfer-runs`
+`name` (optional), `limit` (100): the runs, latest first, as `{run_id, param_name, trigger_type, scheduled_time,
+queued_time, start_time, end_time, status, transferred, failed, message, runner, requested_by, log_lines}`. `trigger_type` is
+`schedule` or `manual`; `status` is `I` initiated, `S` running, `D` done, `E` error or `C` canceled.
+
+#### `GET /api/get-transfer-run`
+`run_id`: one run with its `run_log`, the lines the transfer logged. For a param with `LogDatabase:Y` they are read from
+`rapo_transfer_log`: `log_lines` is the number of lines the run logged and `log_trimmed` is true when fewer are left
+because only the newest `[TRANSFER] log_max_lines` lines of the param are kept.
 ### Service
 
 #### `GET /api/version`
