@@ -89,32 +89,7 @@
           </q-input>
           <q-btn aria-label="Remove row" size="sm" color="primary" flat round icon="fas fa-minus" @click="removeKpi(index)" />
           <!-- The slot is kept on every row, so the ▶ buttons stay in one column. -->
-          <div class="kpi-button-slot">
-          <q-btn aria-label="Add row"
-            v-if="index == kpiConfigObject.length - 1"
-            size="sm"
-            color="primary"
-            flat
-            round
-            icon="fas fa-plus"
-            :disable="unusedTypes.length == 0">
-            <q-menu>
-              <q-list dense class="text-no-wrap">
-                <q-item clickable v-close-popup v-for="type in unusedTypes" :key="type.kpi_type" @click="addKpi(type.kpi_type)">
-                  <q-item-section>
-                    <q-item-label>
-                    <q-chip size="12px" class="q-ml-none menu-code">
-                      <q-avatar :icon="kpiIcon" :color="kpiUnitColor(type.kpi_value_unit)" text-color="white" />
-                      {{ type.kpi_type }}
-                    </q-chip>
-                    {{ type.kpi_type_desc }}
-                  </q-item-label>
-                  </q-item-section>
-                </q-item>
-              </q-list>
-            </q-menu>
-          </q-btn>
-          </div>
+          <div class="kpi-button-slot"></div>
           <template v-if="calculable">
             <q-btn
               aria-label="Calculate this KPI"
@@ -132,28 +107,14 @@
           </template>
         </div>
 
-        <q-btn v-if="kpiConfigObject.length == 0" size="md" color="primary" icon="fas fa-plus" label="Add KPI" :disable="unusedTypes.length == 0">
-          <q-menu>
-            <q-list dense class="text-no-wrap">
-              <q-item clickable v-close-popup v-for="type in unusedTypes" :key="type.kpi_type" @click="addKpi(type.kpi_type)">
-                <q-item-section>
-                  <q-item-label>
-                    <q-chip size="12px" class="q-ml-none menu-code">
-                      <q-avatar :icon="kpiIcon" :color="kpiUnitColor(type.kpi_value_unit)" text-color="white" />
-                      {{ type.kpi_type }}
-                    </q-chip>
-                    {{ type.kpi_type_desc }}
-                  </q-item-label>
-                </q-item-section>
-              </q-item>
-            </q-list>
-          </q-menu>
-        </q-btn>
       </q-card-section>
     </q-card>
 
-    <q-card v-if="kpiConfigObject.length > 0" class="q-pa-sm" flat bordered>
-      <q-tabs v-model="kpiTab" dense align="left" active-color="primary" indicator-color="primary" narrow-indicator>
+    <q-card class="q-pa-sm" flat bordered>
+      <!-- The Add KPI button sits right after the tabs of the defined KPIs and stays there after each add, so several
+           KPIs can be added in one go. -->
+      <div class="row items-center no-wrap">
+      <q-tabs v-if="kpiConfigObject.length > 0" v-model="kpiTab" class="kpi-tabs" dense align="left" active-color="primary" indicator-color="primary" narrow-indicator>
         <q-tab v-for="item in kpiConfigObject" :key="item.kpi_type" :name="item.kpi_type">
           <div class="row items-center no-wrap q-gutter-x-xs">
             <q-icon :name="kpiIcon" :color="kpiUnitColor(typeUnit(item.kpi_type))" size="14px" />
@@ -162,9 +123,37 @@
           <q-tooltip>{{ typeDescription(item.kpi_type) }}</q-tooltip>
         </q-tab>
       </q-tabs>
-      <q-separator />
+      <q-btn
+        class="add-kpi q-ml-sm"
+        size="md"
+        color="primary"
+        outline
+        no-caps
+        icon="fas fa-plus"
+        label="Add KPI"
+        :disable="unusedTypes.length == 0">
+        <q-menu>
+          <q-list dense class="text-no-wrap">
+            <q-item clickable v-close-popup v-for="type in unusedTypes" :key="type.kpi_type" @click="addKpi(type.kpi_type)">
+              <q-item-section>
+                <q-item-label>
+                  <q-chip size="12px" class="q-ml-none menu-code">
+                    <q-avatar :icon="kpiIcon" :color="kpiUnitColor(type.kpi_value_unit)" text-color="white" />
+                    {{ type.kpi_type }}
+                  </q-chip>
+                  {{ type.kpi_type_desc }}
+                  <span v-if="type.kpi_value_unit" class="text-grey-7 q-ml-sm">[{{ type.kpi_value_unit }}]</span>
+                </q-item-label>
+              </q-item-section>
+            </q-item>
+          </q-list>
+        </q-menu>
+        <q-tooltip v-if="unusedTypes.length == 0">Every KPI type is already defined for this control</q-tooltip>
+      </q-btn>
+      </div>
+      <q-separator v-if="kpiConfigObject.length > 0" />
 
-      <q-tab-panels v-model="kpiTab" animated keep-alive>
+      <q-tab-panels v-if="kpiConfigObject.length > 0" v-model="kpiTab" animated keep-alive>
         <q-tab-panel v-for="(item, index) in kpiConfigObject" :key="item.kpi_type" :name="item.kpi_type" class="q-gutter-y-md">
           <div v-for="statement in statements" :key="statement.field">
             <!-- Own statement: the column holds it and the engine runs it as it is. -->
@@ -520,6 +509,14 @@ export default {
 .kpi-result {
   flex: none;
   width: 290px;
+}
+/* The tabs give way (and scroll) before the Add KPI button next to them does. */
+.kpi-tabs {
+  flex: 0 1 auto;
+  min-width: 0;
+}
+.add-kpi {
+  flex: none;
 }
 .run-select {
   min-width: 260px;
