@@ -89,7 +89,32 @@
           </q-input>
           <q-btn aria-label="Remove row" size="sm" color="primary" flat round icon="fas fa-minus" @click="removeKpi(index)" />
           <!-- The slot is kept on every row, so the ▶ buttons stay in one column. -->
-          <div class="kpi-button-slot"></div>
+          <div class="kpi-button-slot">
+          <q-btn aria-label="Add row"
+            v-if="index == kpiConfigObject.length - 1"
+            size="sm"
+            color="primary"
+            flat
+            round
+            icon="fas fa-plus"
+            :disable="unusedTypes.length == 0">
+            <q-menu>
+              <q-list dense class="text-no-wrap">
+                <q-item clickable v-close-popup v-for="type in unusedTypes" :key="type.kpi_type" @click="addKpi(type.kpi_type)">
+                  <q-item-section>
+                    <q-item-label>
+                    <q-chip size="12px" class="q-ml-none menu-code">
+                      <q-avatar :icon="kpiIcon" :color="kpiUnitColor(type.kpi_value_unit)" text-color="white" />
+                      {{ type.kpi_type }}
+                    </q-chip>
+                    {{ type.kpi_type_desc }}
+                  </q-item-label>
+                  </q-item-section>
+                </q-item>
+              </q-list>
+            </q-menu>
+          </q-btn>
+          </div>
           <template v-if="calculable">
             <q-btn
               aria-label="Calculate this KPI"
@@ -107,6 +132,23 @@
           </template>
         </div>
 
+        <q-btn v-if="kpiConfigObject.length == 0" size="md" color="primary" icon="fas fa-plus" label="Add KPI" :disable="unusedTypes.length == 0">
+          <q-menu>
+            <q-list dense class="text-no-wrap">
+              <q-item clickable v-close-popup v-for="type in unusedTypes" :key="type.kpi_type" @click="addKpi(type.kpi_type)">
+                <q-item-section>
+                  <q-item-label>
+                    <q-chip size="12px" class="q-ml-none menu-code">
+                      <q-avatar :icon="kpiIcon" :color="kpiUnitColor(type.kpi_value_unit)" text-color="white" />
+                      {{ type.kpi_type }}
+                    </q-chip>
+                    {{ type.kpi_type_desc }}
+                  </q-item-label>
+                </q-item-section>
+              </q-item>
+            </q-list>
+          </q-menu>
+        </q-btn>
       </q-card-section>
     </q-card>
 
