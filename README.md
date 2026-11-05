@@ -80,6 +80,10 @@ If you are a young RA Team or looking for some alternatives, try Rapo because:
 * **Results per email**. A control can mail its results when a run finishes: recipients, a subject and body with
   run variables, and an Excel file of the run's rows, filtered and with the fields you choose. SMTP is set once in
   the `[EMAIL]` section of `rapo.ini`.
+* **Jobs**. SQL, transfers, programs and scripts (Python, Perl, shell, batch, PowerShell) run on a schedule of their
+  own, independent of the controls: each job has a pre part, a condition, a main task and a post part, parameters with
+  secrets, a timeout, an e-mail on failure and versions. The *Jobs* page lists, runs and edits them
+  ([guide](docs/jobs.md), [design](docs/jobs-design.md)).
 * **File transfers**. The logic of [filetransfer-py](https://github.com/aldimeski/filetransfer-py) runs inside rapo:
   files are copied or moved from a local directory or an SFTP server to one or more target directories. A param is a
   `.param` file or a row of the database, is scheduled by rapo or found in the crontab (Linux), and the *Transfers*

@@ -6,6 +6,23 @@ The full notes and upgrade steps of each release are in `migrations/<version>/` 
 
 ---
 
+## v0.9.0 — 2026-11-05
+
+New tables `rapo_job`, `rapo_job_version`, `rapo_job_run`, `rapo_job_log`, `rapo_job_event` and a row `RAPO.JOBS` of
+`rapo_scheduler` (`migrations/v0.9.0/upgrade.sql`); new section `[JOBS]` of `rapo.ini`; new access area *Jobs*. **Stop every
+server before the upgrade and start none of an older version after it** (`migrations/v0.9.0/README.md`).
+
+- **Jobs** (RAJO): SQL, transfers, programs and scripts rapo runs on their own schedule, each with a *pre* part, a *condition*, a *main* task and a *post* part (only after main succeeded); `SQL`, `TRANSFER`, `EXECUTABLE`, `COMMAND`, `PYTHON`, `PERL` everywhere, `SHELL` on Linux, `BATCH` and `POWERSHELL` on Windows; parameters with secrets, timeout, overlap, versions ([docs/jobs.md](jobs.md), [docs/jobs-design.md](jobs-design.md)).
+- **A job scheduler of its own**, independent of the scheduler of the controls (its own lease, switch, options and events); runs are queued for `[JOBS] parallelism` slots and performed in a process of their own, killed with everything they started on cancel or timeout.
+- **Failure mail**: an error in any part, a timeout or a dead process sends one e-mail to the address of the job (else `[JOBS] default_email`); a cancel, an unmet condition or a skipped start send none.
+- **Jobs page and editor**: the list, run now or with parameters, cancel, the run history with a coloured log, the status of the job scheduler and its header indicator; the editor with the tabs General, Pre, Condition, Main, Post, Schedule and Versions, and *Check*.
+- **Transfer params from a job**: *New param...* and *Edit param...* in a `TRANSFER` task, in the database, also while `[TRANSFER] enabled` is off.
+- **Access**: the area *Jobs* (View, Operate, Edit; Edit in the *Full* preset only), Free SQL for a job with SQL; 23 routes and the event `jobs:changed` ([docs/api](api/README.md#jobs)).
+- **The scheduler lease is bound to its row**: the statements on `rapo_scheduler` named no row and would have touched the row of the other scheduler; the lease is a class (`rapo/core/lease.py`) used by both schedulers.
+- **`rapo-server start dev --scheduler` starts the scheduler**, which it never did.
+
+---
+
 ## v0.8.9 — 2026-11-05
 
 No change to Rapo's own schema. **The file transfers are off by default**: set `[TRANSFER] enabled=True` to keep them

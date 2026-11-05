@@ -1,8 +1,8 @@
 # RAJO - jobs: design
 
 Design of the jobs of rapo (RAJO, Revenue Assurance Job Orchestrator), for the requirement in
-`documents/RAJO.txt` (v1.0). Status: **draft for review**, nothing of it is implemented. The first release is 0.9.0+fork,
-workflows and dependencies are the second phase (their hooks are prepared here).
+`documents/RAJO.txt` (v1.0). Status: **implemented in 0.9.0+fork**; the user guide is [jobs.md](jobs.md). Workflows and
+dependencies are the second phase (their hooks are prepared here).
 
 ## 1. What a job is
 
@@ -291,9 +291,15 @@ Decided (customer, 2026-11-05):
 3. `viewer` gets `view`, `operator` gets `operate`, `editor` none, `edit` only `full`.
 4. SQL runs as the schema owner, so saving a job with an SQL part needs Free SQL.
 
-Open: the names of the tables and routes (sections 3 and 6).
+5. The names of the tables and routes of sections 3 and 6 are as proposed.
 
-## 10. Order of the work
+Where the built version differs from what was first written here: the lease logic is a class of its own
+(`rapo/core/lease.py`) used by both schedulers instead of a generalised `Scheduler`; `get-job-run` answers the log as
+`lines` besides `run_log`; `save-job` also takes the schedule, so one save is one version; `[JOBS] parallelism` is read at
+every dispatch (a change applies at once); a TRANSFER task has routes of its own for its params
+(`get-job-transfer-*`); and `{variables}` are replaced only when they name a known variable, so scripts need no escaping.
+
+## 10. Order of the work (done)
 
 1. Schema and options: `[JOBS]`, migration `v0.9.0`, `store.py`, `definition.py` with tests.
 2. Executors per type and the run process, with tests on Windows (and Linux when available).
