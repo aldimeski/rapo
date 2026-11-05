@@ -48,6 +48,8 @@ from ...transfer import engine as transfer_engine
 from ...transfer import manager as transfer_manager
 from ...transfer import store as transfer_store
 from ...transfer.manager import manager as transfers
+from ...jobs.manager import manager as job_manager
+from ...jobs.scheduler import scheduler as job_scheduler
 from ...analysis import datasets
 from ...analysis import explain
 from ...analysis.explain_job import explainer
@@ -108,7 +110,9 @@ async def lifespan(app):
     logs.cleaner.start()
     await asyncio.to_thread(runner.start)
     await asyncio.to_thread(transfers.start)
+    await asyncio.to_thread(job_manager.start)
     scheduler.start()
+    job_scheduler.start()
     sessions.start()
     explainer.start()
     spare.start()
@@ -120,7 +124,9 @@ async def lifespan(app):
     await asyncio.to_thread(explainer.stop)
     await asyncio.to_thread(scanner.stop)
     await asyncio.to_thread(sessions.stop)
+    await asyncio.to_thread(job_scheduler.stop)
     await asyncio.to_thread(scheduler.stop)
+    await asyncio.to_thread(job_manager.stop)
     await asyncio.to_thread(transfers.stop)
     await asyncio.to_thread(runner.stop)
     logs.cleaner.stop()
@@ -473,8 +479,11 @@ def apply_config():
     # A higher control_parallelism lets queued runs start at once.
     with runner.condition:
         runner.condition.notify_all()
-    # [TRANSFER] enabled starts or stops the transfer manager at once.
+    # [TRANSFER] enabled starts or stops the transfer manager at once, and
+    # [JOBS] enabled the job manager and the job scheduler.
     transfers.sync()
+    job_manager.sync()
+    job_scheduler.sync()
     pending = [item for item in config.changes() if item['restart']]
     names = ', '.join(f"{item['section']}.{item['option']}"
                       for item in applied) or 'nothing'

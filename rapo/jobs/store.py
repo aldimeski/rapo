@@ -191,6 +191,50 @@ def read_job(name):
     return row
 
 
+def read_job_by_id(job_id):
+    """Get the job with its definition (JSON text), None when there is
+    none."""
+    row = _execute(sa.select(job_table).where(
+        job_table.c.job_id == job_id), as_dict=True)
+    if row:
+        row['definition'] = _text(row['definition'])
+    return row
+
+
+def read_scheduled():
+    """Get {job_id: {job_name, schedule}} of the jobs that are on and have
+    a schedule that can be read, `schedule` being the parsed units."""
+    rows = _execute(sa.select(
+        job_table.c.job_id, job_table.c.job_name,
+        job_table.c.schedule_config).where(
+        job_table.c.status == 'Y',
+        job_table.c.schedule_config.isnot(None)).order_by(
+        job_table.c.job_id), as_table=True)
+    found = {}
+    for row in rows:
+        try:
+            units = core_schedule.parse(row['schedule_config'])
+        except Exception:
+            logger.warning(f'Job {row["job_name"]} has an invalid schedule')
+            continue
+        if units:
+            found[row['job_id']] = {'job_name': row['job_name'],
+                                    'schedule': units}
+    return found
+
+
+def signature():
+    """Get what changes when a job or its schedule does: the number of
+    jobs, the latest change and the sum of the versions and statuses."""
+    row = _execute(sa.select(
+        sa.func.count().label('jobs'),
+        sa.func.max(job_table.c.updated_date).label('changed'),
+        sa.func.sum(job_table.c.version).label('versions'),
+        sa.func.sum(sa.case((job_table.c.status == 'Y', 1),
+                            else_=0)).label('on')), as_dict=True)
+    return tuple(row.values())
+
+
 def get_job(name):
     """Get the job, raising StoreError 404 when there is none."""
     row = read_job(check_name(name))
@@ -384,10 +428,11 @@ def read_last_runs():
     return {row['job_id']: row for row in rows}
 
 
-def add_log_lines(run_id, job_id, lines, limit):
-    """Write the log of a run, lines being (epoch, level, stream, text),
-    then keep only the newest `limit` lines of the job, those of older runs
-    go first."""
+def add_log_lines(run_id, job_id, lines, limit, start=1, trim=True):
+    """Write lines of the log of a run, being (epoch, level, stream, text)
+    and numbered from `start`, then keep only the newest `limit` lines of
+    the job, those of older runs go first (`trim` false leaves that to the
+    last call)."""
     if lines:
         rows = [{'run_id': run_id, 'job_id': job_id, 'line_no': number,
                  'log_time': dt.datetime.fromtimestamp(moment).replace(
@@ -395,14 +440,15 @@ def add_log_lines(run_id, job_id, lines, limit):
                  'log_level': level[:8], 'stream': stream[:4],
                  'message': text[:4000]}
                 for number, (moment, level, stream, text)
-                in enumerate(lines, 1)]
+                in enumerate(lines, start)]
         try:
             with db.engine.begin() as connection:
                 connection.execute(log_table.insert(), rows)
         except sa.exc.DatabaseError as error:
             _missing(error)
             raise
-    trim_log(job_id, limit)
+    if trim:
+        trim_log(job_id, limit)
 
 
 def trim_log(job_id, limit):
@@ -412,6 +458,29 @@ def trim_log(job_id, limit):
         log_table.c.log_id.desc()).limit(limit)
     _execute(log_table.delete().where(
         log_table.c.job_id == job_id, log_table.c.log_id.notin_(keep)))
+
+
+def sweep(runner):
+    """Finish the runs of this server left active by a crash. Returns their
+    number."""
+    try:
+        result = db.execute(run_table.update().where(
+            run_table.c.runner == runner,
+            run_table.c.status.in_(ACTIVE)).values(
+            status=ERROR, end_time=now(),
+            message='The job stopped because the server stopped '
+                    'unexpectedly.'))
+    except sa.exc.DatabaseError as error:
+        # The tables are missing: reported where they are used.
+        _missing_quiet(error)
+        return 0
+    return result.rowcount
+
+
+def _missing_quiet(error):
+    text = str(error)
+    if not ('ORA-00942' in text or 'no such table' in text):
+        raise error
 
 
 def clean_runs(days):
@@ -432,13 +501,28 @@ def clean_runs(days):
 
 def add_event(job_id, trigger_type, event_type, scheduled_time=None,
               run_id=None, message=None, runner=None):
-    """Record what the job scheduler did."""
+    """Record what the job scheduler did, get the ID of the event. An event
+    moves through types while a request is served (`update_event`)."""
     moment = now()
-    _execute(event_table.insert().values(
+    result = _execute(event_table.insert().values(
         job_id=job_id, trigger_type=trigger_type, event_type=event_type,
         scheduled_time=scheduled_time, event_time=moment, updated=moment,
         run_id=run_id, message=(message or '')[:4000] or None,
         runner=runner))
+    event_id = result.inserted_primary_key[0]
+    if event_id is None:
+        event_id = _execute(sa.select(sa.func.max(event_table.c.event_id)),
+                            as_scalar=True)
+    return int(event_id)
+
+
+def update_event(event_id, **values):
+    """Change an event."""
+    if values.get('message'):
+        values['message'] = str(values['message'])[:4000]
+    _execute(event_table.update().where(
+        event_table.c.event_id == event_id).values(**values,
+                                                   updated=now()))
 
 
 def read_events(limit=200, job_id=None):

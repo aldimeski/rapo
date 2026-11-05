@@ -110,14 +110,26 @@ after `[JOBS] history_retention_days`.
 
 ## 4. Running
 
-* **Job scheduler** (`rapo/jobs/scheduler.py`): the same lease, fire, late-fire and missed-fire logic as
-  `rapo/core/scheduler.py`, on the row `RAPO.JOBS`, `rapo_job_event` and `rapo_job.schedule_config`. It uses
-  `rapo/core/schedule.py` unchanged. `Scheduler` is generalised (the lease row id, the source of fires and the event
-  table become parameters) instead of copied, so a fix of one reaches the other. Its own stop/start switch is the
-  `disabled` column of its row. One server runs it at a time; the one running the control scheduler may be another.
-* **Run manager** (`rapo/jobs/manager.py`): after `rapo/transfer/manager.py`: a run is recorded at once (`I`), waits
-  in a queue for one of the `[JOBS] parallelism` slots, is run in a process of its own (`S`) and ends `D`, `E` or `C`.
-  `overlap` is applied when it is submitted. A watchdog stops a run on `timeout` or when the parent dies.
+* **Lease** (`rapo/core/lease.py`): the lease logic of the scheduler of the controls is a class of its own, used by
+  both schedulers: acquire or renew with a heartbeat, take over a silent holder, give up, stop and start for every
+  server. Every statement names its row (`RAPO.SCHEDULER` or `RAPO.JOBS`), so the two never touch each other: the
+  queries of the controls' scheduler, `reader.read_scheduler_record`, the CLI and the checkpoint clean-up of
+  `database.py` named no row before and are bound to `RAPO.SCHEDULER` now.
+* **Job scheduler** (`rapo/jobs/scheduler.py`): the same fire, late-fire (more than 60 seconds late: an event
+  `MISSED`, not a run), missed-downtime and maintenance logic as `rapo/core/scheduler.py`, on the lease `RAPO.JOBS`,
+  `rapo_job_event` and `rapo_job.schedule_config`, with `rapo/core/schedule.py` unchanged. It follows `[JOBS]`
+  (`enabled`, `lease_timeout`, `refresh_interval`, `maintenance_interval`, `event_retention_days`,
+  `missed_window_hours`) and `RAPO_SCHEDULER`; it has its own stop/start switch (the `disabled` column of its row), and one
+  server runs it at a time, not necessarily the one running the scheduler of the controls. Maintenance deletes the
+  runs and events older than their retention.
+* **Run manager** (`rapo/jobs/manager.py`): after `rapo/transfer/manager.py`. A run is recorded at once (`I`), waits
+  in a queue for one of the `[JOBS] parallelism` slots (read at every dispatch, so a reload applies at once), runs in a
+  process of its own (`S`) and ends `D`, `E` or `C`. The log is written to `rapo_job_log` as the run reports it. Events:
+  `FIRED` when a run is queued, `STARTED` when it gets its process, `MISSED`, `FAILED` (it could not be started) and
+  `CANCELED`. `overlap` is applied at the start: `skip` refuses a manual start (409) and records a scheduled one as a
+  canceled run; `queue` lets a run wait for the previous run of its job without blocking other jobs; `allow` does not
+  care. A run over its `timeout` (the job's, else `[JOBS] timeout`, 0: none) and a run whose process died are errors.
+  At start the runs this server left active by a crash are finished as errors.
 * **Run process** (`rapo/jobs/executor.py`, `processes.py`): the parts of one run go one after another inside the same
   process (`executor.operate`), which reports `stage`, `condition`, `log` and finally `outcome` through a pipe. The run
   manager stops a canceled run or one over its `timeout` by killing that process **with all the programs it started**
@@ -145,11 +157,13 @@ after `[JOBS] history_retention_days`.
     lines go to the job log, a failed file or any error fails the part.
   * A run starts by checking its definition against this server again (`validate`, with the files that must exist), so a
     job whose type left `enabled_types` or whose file left `allowed_dirs` since it was saved is not run.
-* **Failure mail**: any error of any part (PRE, CONDITION evaluation, MAIN, POST, timeout) ends the run as `E`, writes
-  the run's message and sends one e-mail with `rapo/core/mailer.py` to `notify_email`, else to `[JOBS] default_email`.
-  A run canceled by the user, or Canceled because the condition was not met, because of `overlap` or because the fire
-  was late, is not an error and sends nothing. Needs `[EMAIL] enabled=True`; without it the run is `E` and the log says
-  that no mail could be sent (`mail_status`).
+* **Failure mail** (`rapo/jobs/notify.py`): any error of any part (PRE, CONDITION evaluation, MAIN, POST), a timeout and
+  a run whose process died end the run as `E` and send one e-mail with the run, the stage, the exit code, the message
+  and the last 40 lines of the log (secrets already hidden) to the address of the job, else to `[JOBS] default_email`,
+  through `rapo/core/mailer.py` (`[EMAIL]`). A run canceled by the user or by a stop of the manager, one whose condition
+  was not met, a skipped start and a late or missed fire are not errors and send nothing. When no mail can be sent (no
+  address, `[EMAIL] enabled` off, no sender, a server that refuses) the run is still `E` and `mail_status` of the run
+  says why.
 * **Variables** and the secrets are applied in the run process, so a secret never travels to the browser.
 
 ## 5. rapo.ini
