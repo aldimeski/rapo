@@ -1385,7 +1385,9 @@ Answers a list of datetimes, `[]` for a schedule that never fires. `422` when th
 
 ### File transfers
 
-The file transfers of `rapo/transfer/` (see [docs/transfer.md](../transfer.md)). Reads need *Datasources: View*, the
+The file transfers of `rapo/transfer/` (see [docs/transfer.md](../transfer.md)). While `[TRANSFER] enabled` is off
+(the default) every route below answers `404` with a note to switch the transfers on; `GET /api/info` tells it as
+`transfers_available`. Reads need *Datasources: View*, the
 routes that change a param or its schedule *Datasources: Edit*, `run-transfer` and `cancel-transfer` *Files: Operate*.
 A failed request answers its `detail` with `400` (a bad name or value), `404` (no such param or run), `409` (the name is
 taken, the param is in both places, or it is running or waiting), `422` (the param does not validate) or `503` (the

@@ -6,6 +6,17 @@ The full notes and upgrade steps of each release are in `migrations/<version>/` 
 
 ---
 
+## v0.8.9 — 2026-11-05
+
+No change to Rapo's own schema. **The file transfers are off by default**: set `[TRANSFER] enabled=True` to keep them
+(`migrations/v0.8.9/README.md`).
+
+- **Switch for the file transfers**: `[TRANSFER] enabled` (default `False`). Off: no *Transfers* page, every transfer route answers `404`, no transfer manager, no scheduled or crontab-detected transfers; a change on the *Configuration* tab applies at once and starts or stops the manager ([docs/transfer.md](transfer.md#switching-the-transfers-on)).
+- **`rapo.ini` saved from the UI keeps its line endings**: on Windows the first change turned LF into CRLF and every later one failed with *changed on disk meanwhile*.
+- **KPI tab of the control editor**: the `+` beside the last KPI row and the *Add KPI* button of a control without KPIs are back next to the *Add KPI* button of the tabs.
+
+---
+
 ## v0.8.8 — 2026-10-23
 
 New tables `rapo_transfer_param`, `rapo_transfer_schedule`, `rapo_transfer_run` (`migrations/v0.8.8/upgrade.sql`); new
