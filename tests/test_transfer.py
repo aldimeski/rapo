@@ -844,5 +844,59 @@ class ManagerTests(unittest.TestCase):
             shutil.rmtree(target, ignore_errors=True)
 
 
+class SwitchTests(unittest.TestCase):
+    """[TRANSFER] enabled: off (the default) leaves nothing running."""
+
+    def setUp(self):
+        self.original = dict(rapo_config.config)
+        rapo_config.config.pop('TRANSFER', None)
+        self.manager = manager.TransferManager()
+
+    def tearDown(self):
+        rapo_config.config.clear()
+        rapo_config.config.update(self.original)
+
+    def test_off_by_default(self):
+        self.assertFalse(self.manager.enabled())
+
+    def test_off_starts_nothing(self):
+        self.manager.start()
+        self.assertFalse(self.manager.active)
+        self.assertEqual(self.manager.threads, [])
+        self.assertIsNone(self.manager.next_wake(dt.datetime.now()))
+        self.manager.fire(when('2026-05-01 00:00:00'),
+                          when('2026-05-01 00:00:05'))
+        self.assertEqual(len(self.manager.pending), 0)
+
+    def test_on_starts_the_manager(self):
+        rapo_config.config['TRANSFER'] = {'enabled': True}
+        self.assertTrue(self.manager.enabled())
+        self.manager.start()
+        try:
+            self.assertTrue(self.manager.active)
+            self.assertEqual(len(self.manager.threads), 2)
+        finally:
+            self.manager.stop()
+
+    def test_sync_follows_a_change_of_the_option(self):
+        self.manager.sync()
+        self.assertFalse(self.manager.active)
+        rapo_config.config['TRANSFER'] = {'enabled': True}
+        self.manager.sync()
+        try:
+            self.assertTrue(self.manager.active)
+            rapo_config.config['TRANSFER'] = {'enabled': False}
+            self.manager.sync()
+            self.assertFalse(self.manager.active)
+            self.assertEqual(self.manager.threads, [])
+        finally:
+            self.manager.stop()
+
+    def test_example_ini_lists_the_option(self):
+        from rapo import options
+        self.assertIsNotNone(options.find('TRANSFER', 'enabled'))
+        self.assertEqual(options.missing_from_catalogue(), [])
+
+
 if __name__ == '__main__':
     unittest.main()

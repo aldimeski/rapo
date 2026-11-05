@@ -124,9 +124,18 @@ class TransferManager:
         """Get the number of execution slots."""
         return max(int(setting('parallelism') or 1), 1)
 
+    @staticmethod
+    def enabled():
+        """Tell whether the transfers are switched on ([TRANSFER] enabled)."""
+        return setting('enabled') is True
+
     def start(self):
-        """Start the manager threads."""
+        """Start the manager threads, unless the transfers are switched off."""
         if self.active:
+            return
+        if not self.enabled():
+            logger.info('Transfer manager not started: [TRANSFER] enabled '
+                        'is off')
             return
         self.active = True
         try:
@@ -140,6 +149,18 @@ class TransferManager:
             self.threads.append(thread)
         logger.info(f'Transfer manager started as {self.name} '
                     f'with {self.capacity} slots')
+
+    def sync(self):
+        """Follow [TRANSFER] enabled after rapo.ini was reloaded: start the
+        manager when it was switched on, stop it (canceling what waits or
+        runs) when it was switched off.
+        """
+        if self.enabled() and not self.active:
+            self.start()
+        elif not self.enabled() and self.active:
+            logger.info('[TRANSFER] enabled switched off: stopping the '
+                        'transfer manager')
+            self.stop()
 
     def stop(self):
         """Stop the manager, killing the running transfers."""
@@ -157,6 +178,7 @@ class TransferManager:
             self._kill(job)
             self._finish(job, store.CANCELED,
                          'Transfer stopped because of the server shutdown.')
+        self.threads = []
         logger.info('Transfer manager stopped')
 
     def sweep(self):
@@ -466,6 +488,8 @@ class TransferManager:
 
     def next_wake(self, after):
         """Get the timestamp of the earliest scheduled fire, None if none."""
+        if not self.enabled():
+            return None
         wakes = []
         for item in self.read_schedules().values():
             if item['enabled'] and item['schedule']:
@@ -476,6 +500,8 @@ class TransferManager:
 
     def maintain(self):
         """Delete the old runs."""
+        if not self.enabled():
+            return
         days = setting('history_retention_days')
         deleted = store.clean_runs(days)
         logger.info(f'{deleted} transfer runs older than {days} days '

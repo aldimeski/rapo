@@ -474,7 +474,10 @@ export default {
       }
       links.push({ icon: "fas fa-clock", text: "Scheduler", route: "/scheduler", routes: ["scheduler"], gap: true });
       // File transfers (the filetransfer-py logic inside rapo): their params, schedules and runs.
-      links.push({ icon: "fas fa-exchange-alt", text: "Transfers", route: "/transfers", routes: ["transfers"] });
+      // Shown only when the server has them switched on ([TRANSFER] enabled of rapo.ini).
+      if (this.getEnvInfo && this.getEnvInfo.transfers_available) {
+        links.push({ icon: "fas fa-exchange-alt", text: "Transfers", route: "/transfers", routes: ["transfers"] });
+      }
       // PDI Core datasources, where their tables are readable; spaced from the lists of rapo's own objects.
       if (this.getEnvInfo && this.getEnvInfo.datasources_available) {
         links.push({ icon: FILES_ICON, text: "Files", route: "/files", routes: ["files", "files-log", "file-analysis"], gap: true });

@@ -234,6 +234,7 @@ def info():
         'log_directory': LOG_DIR,
         'tokens_available': token_store.available is not False,
         'kpi_available': kpi.available,
+        'transfers_available': transfers.enabled(),
         'view_edit': views.enabled(),
         'view_preview_max_rows': options.get('VIEWS', 'preview_max_rows'),
         **datasource_capabilities()
@@ -472,6 +473,8 @@ def apply_config():
     # A higher control_parallelism lets queued runs start at once.
     with runner.condition:
         runner.condition.notify_all()
+    # [TRANSFER] enabled starts or stops the transfer manager at once.
+    transfers.sync()
     pending = [item for item in config.changes() if item['restart']]
     names = ', '.join(f"{item['section']}.{item['option']}"
                       for item in applied) or 'nothing'
@@ -2495,6 +2498,15 @@ def remove_file(path):
         os.remove(path)
 
 
+def require_transfers():
+    """Refuse a transfer route while [TRANSFER] enabled is off."""
+    if not transfers.enabled():
+        raise fastapi.HTTPException(
+            status_code=404,
+            detail='File transfers are switched off: set enabled=True in '
+                   'the [TRANSFER] section of rapo.ini.')
+
+
 def transfer_answer(call, *args, **kwargs):
     """Run a file transfer call, answering its StoreError as HTTP error."""
     try:
@@ -2506,7 +2518,8 @@ def transfer_answer(call, *args, **kwargs):
         raise fastapi.HTTPException(status_code=422, detail=str(error))
 
 
-@api.get('/get-transfers')
+@api.get('/get-transfers',
+         dependencies=[fastapi.Depends(require_transfers)])
 def get_transfers(rescan: bool = False):
     """Get every file transfer param: where it is kept (file or database),
     how it is scheduled (in rapo or in the crontab, with the next start and
@@ -2519,7 +2532,8 @@ def get_transfers(rescan: bool = False):
     return answer
 
 
-@api.get('/get-transfer-catalogue')
+@api.get('/get-transfer-catalogue',
+         dependencies=[fastapi.Depends(require_transfers)])
 def get_transfer_catalogue():
     """Get the parameters a transfer can have, in the order they are written:
     name, group, kind of value, default, whether it is required and its
@@ -2528,7 +2542,8 @@ def get_transfer_catalogue():
             'parameters': transfer_catalogue.parameters()}
 
 
-@api.get('/get-transfer')
+@api.get('/get-transfer',
+         dependencies=[fastapi.Depends(require_transfers)])
 def get_transfer(name: str):
     """Get the text of a param, where it is kept, its description and its
     schedule in rapo."""
@@ -2542,7 +2557,8 @@ def get_transfer(name: str):
                          'enabled': planned['enabled']} if planned else None}
 
 
-@api.post('/validate-transfer')
+@api.post('/validate-transfer',
+         dependencies=[fastapi.Depends(require_transfers)])
 def validate_transfer(data: dict = fastapi.Body(...)):
     """Check the text of a param and show what its date tokens expand to
     now (`now`, "YYYY-MM-DD HH:MM:SS", tries another moment)."""
@@ -2562,7 +2578,8 @@ def validate_transfer(data: dict = fastapi.Body(...)):
             'sftp': cfg.sftp}
 
 
-@api.post('/save-transfer')
+@api.post('/save-transfer',
+         dependencies=[fastapi.Depends(require_transfers)])
 def save_transfer(data: dict = fastapi.Body(...)):
     """Save a param to a file in [TRANSFER] param_dir or to the database.
 
@@ -2577,7 +2594,8 @@ def save_transfer(data: dict = fastapi.Body(...)):
     return {'status': 200, 'param_name': name}
 
 
-@api.get('/check-move-transfer')
+@api.get('/check-move-transfer',
+         dependencies=[fastapi.Depends(require_transfers)])
 def check_move_transfer(name: str, target: str):
     """Get what moving a param to `file` or `db` changes: `warnings` need a
     confirmation (`confirm` of move-transfer), `notes` only tell. Moved to a
@@ -2587,7 +2605,8 @@ def check_move_transfer(name: str, target: str):
     return {'warnings': plan['warnings'], 'notes': plan['notes']}
 
 
-@api.post('/move-transfer')
+@api.post('/move-transfer',
+         dependencies=[fastapi.Depends(require_transfers)])
 def move_transfer(name: str, target: str, confirm: bool = False):
     """Move a param to a file (`file`) or to the database (`db`); its
     schedule stays. `409` while the move has warnings and `confirm` is not
@@ -2597,7 +2616,8 @@ def move_transfer(name: str, target: str, confirm: bool = False):
     return {'status': 200}
 
 
-@api.delete('/delete-transfer')
+@api.delete('/delete-transfer',
+         dependencies=[fastapi.Depends(require_transfers)])
 def delete_transfer(name: str):
     """Delete a param, wherever it is kept, with its schedule."""
     name = transfer_answer(transfer_store.check_name, name)
@@ -2609,7 +2629,8 @@ def delete_transfer(name: str):
     return {'status': 200}
 
 
-@api.post('/save-transfer-schedule')
+@api.post('/save-transfer-schedule',
+         dependencies=[fastapi.Depends(require_transfers)])
 def save_transfer_schedule(data: dict = fastapi.Body(...)):
     """Set the schedule of a param in rapo, the units of a control schedule
     ({mday, wday, hour, min, sec}); no units: not scheduled in rapo. The
@@ -2630,7 +2651,8 @@ def save_transfer_schedule(data: dict = fastapi.Body(...)):
     return {'status': 200}
 
 
-@api.post('/run-transfer')
+@api.post('/run-transfer',
+         dependencies=[fastapi.Depends(require_transfers)])
 def run_transfer(name: str):
     """Initiate a run of a param and queue it for execution."""
     run_id = transfer_answer(transfers.submit, name, transfer_manager.MANUAL,
@@ -2639,7 +2661,8 @@ def run_transfer(name: str):
     return {'status': 200, 'run_id': run_id}
 
 
-@api.post('/cancel-transfer')
+@api.post('/cancel-transfer',
+         dependencies=[fastapi.Depends(require_transfers)])
 def cancel_transfer(run_id: int):
     """Cancel a waiting or running transfer of this server."""
     if not transfers.cancel(run_id):
@@ -2650,14 +2673,16 @@ def cancel_transfer(run_id: int):
     return {'status': 200}
 
 
-@api.get('/get-transfer-runs')
+@api.get('/get-transfer-runs',
+         dependencies=[fastapi.Depends(require_transfers)])
 def get_transfer_runs(name: str | None = None,
                       limit: int = fastapi.Query(100, ge=1, le=1000)):
     """Get the runs of file transfers, latest first, without their log."""
     return transfer_answer(transfer_store.read_runs, name, limit)
 
 
-@api.get('/get-transfer-run')
+@api.get('/get-transfer-run',
+         dependencies=[fastapi.Depends(require_transfers)])
 def get_transfer_run(run_id: int):
     """Get one transfer run with its log (`run_log`). For a param with
     LogDatabase:Y the log is read from rapo_transfer_log, and `log_trimmed`

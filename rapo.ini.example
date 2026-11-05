@@ -284,6 +284,10 @@ file_summary_days=90
 [TRANSFER]
 # File transfers (ported from filetransfer-py). A transfer is a .param file in
 # param_dir, or the same text kept in the database (rapo_transfer_param).
+# Show and run the file transfers on this server. False (default): the
+# Transfers page and its API are off, nothing is scheduled or run, no crontab
+# is read; True: as described below. A change from the UI applies at once.
+enabled=False
 # Folder of the .param files; empty: only the transfers kept in the database.
 #param_dir=/opt/filetransfer-py/param
 # Transfers executed at once on this server; more wait in a queue.

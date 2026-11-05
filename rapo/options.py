@@ -304,6 +304,9 @@ _add('DASHBOARD', 'file_summary_days', 'int', 90,
      minimum=31)
 
 # [TRANSFER]
+_add('TRANSFER', 'enabled', 'bool', False,
+     'Show and run the file transfers here (Transfers page, API, scheduling, '
+     'manager); off: nothing of them is visible or started')
 _add('TRANSFER', 'param_dir', 'path', None,
      'Folder of the .param files of the file transfers; empty: only the '
      'transfers kept in the database')

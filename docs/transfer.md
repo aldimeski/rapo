@@ -5,6 +5,21 @@ files from a local directory or an SFTP server into one or more target directori
 **param**, the same `Name:value` text as a `.param` file of that tool, and it is performed by rapo itself:
 the `file-transfer.py` script is not used for a transfer scheduled in rapo.
 
+## Switching the transfers on
+
+Transfers are **off by default**: a new installation shows nothing of them. Set `enabled=True` in the `[TRANSFER]`
+section of `rapo.ini` (or change it on the Configuration tab of Instance details, which applies at once and starts or
+stops the transfer manager; switching off cancels the transfers that wait or run) to switch them on. While `enabled` is off:
+
+* the *Transfers* menu item and page are not shown (the page redirects to the first page the token may open),
+* every transfer API route (`get-transfers`, `run-transfer`, ... ) answers `404` with a note to switch them on,
+* the transfer manager does not start, so nothing is queued or run, and the scheduler does not fire transfers
+  scheduled earlier or clean their history,
+* the crontab is not scanned.
+
+The params, schedules and runs in the database and the `.param` files stay as they are; they are used again once
+`enabled` is on. An existing installation that upgrades must add `enabled=True` to keep its transfers.
+
 The *Transfers* page of the UI (`/transfers`) lists every param in one place, whether it is a file or kept in the
 database, how it is started and when it starts next.
 

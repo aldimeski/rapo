@@ -172,11 +172,15 @@ router.beforeEach(function (to, from, next) {
     return;
   }
   const whoami = store.state.whoami;
-  if (to.name === "token" || routeAllowed(whoami, to)) {
+  // The Transfers page is off when the server has [TRANSFER] enabled switched off.
+  const envInfo = store.state.envInfo;
+  const transfersOff = to.name === "transfers" && envInfo && envInfo.transfers_available === false;
+  if (to.name === "token" || (!transfersOff && routeAllowed(whoami, to))) {
     next();
     return;
   }
-  const landing = LANDING_PAGES.map((name) => router.resolve({ name })).find((route) => routeAllowed(whoami, route));
+  const landing = LANDING_PAGES.filter((name) => !(name === "transfers" && envInfo && envInfo.transfers_available === false))
+    .map((name) => router.resolve({ name })).find((route) => routeAllowed(whoami, route));
   if (landing) {
     next({ name: landing.name, replace: true });
   } else {
