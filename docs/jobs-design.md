@@ -118,14 +118,33 @@ after `[JOBS] history_retention_days`.
 * **Run manager** (`rapo/jobs/manager.py`): after `rapo/transfer/manager.py`: a run is recorded at once (`I`), waits
   in a queue for one of the `[JOBS] parallelism` slots, is run in a process of its own (`S`) and ends `D`, `E` or `C`.
   `overlap` is applied when it is submitted. A watchdog stops a run on `timeout` or when the parent dies.
-* **Run process** (`rapo/jobs/executor.py`): the parts of one run go one after another inside the same process. A
-  task of an OS type starts its program with `subprocess`, in its own process group (Linux `setsid`, Windows
-  `CREATE_NEW_PROCESS_GROUP` and a job object), reads stdout and stderr line by line into the run log, and on
-  timeout or cancel kills the whole tree. The environment of the program is a cleaned one (`PATH`, the OS essentials,
-  `TEMP`/`HOME`) plus the `env` of the task and the job variables, never the environment of rapo.
-  SQL tasks use the connection of rapo. TRANSFER reads the param with `rapo.transfer.store.read` and runs it with
-  `rapo.transfer.engine.execute` directly, so it **works whether `[TRANSFER] enabled` is on or not**; a function of
-  the transfer engine applies the `arguments` to the text of the param.
+* **Run process** (`rapo/jobs/executor.py`, `processes.py`): the parts of one run go one after another inside the same
+  process (`executor.operate`), which reports `stage`, `condition`, `log` and finally `outcome` through a pipe. The run
+  manager stops a canceled run or one over its `timeout` by killing that process **with all the programs it started**
+  (`processes.kill_tree`, with `psutil`: terminate, then kill after 5 seconds; works the same on Linux and Windows), so
+  the executor itself counts no time and waits for no cancel. A SQL task uses the connection of rapo, so killing the
+  process ends its session and Oracle rolls the open transaction back.
+  * Programs (`EXECUTABLE`, `COMMAND`, `PYTHON`, `PERL`, `SHELL`, `BATCH`, `POWERSHELL`) are started with `subprocess`
+    without a window, stdin closed, stdout and stderr read line by line into the log as they come (UTF-8, else the code
+    page of the OS). `code` of a script task is written to a file in a folder of the run, deleted afterwards. Python is
+    started with `-u`; PowerShell with `-NoProfile -NonInteractive -ExecutionPolicy Bypass -File`; a batch file with
+    `cmd /d /c call`. The working folder is the `cwd` of the task, else the folder of the program or script file, else the
+    folder of the run. A `file` or `path` is checked against `allowed_dirs` again after its variables are filled in.
+  * The environment is a cleaned one: the essentials of the OS (`PATH`, `SystemRoot`, `TEMP`, `HOME`, `LANG`, ...) and
+    nothing else of rapo's own, plus `RAPO_JOB_NAME`, `RAPO_JOB_ID`, `RAPO_RUN_ID`, `RAPO_TRIGGER` and
+    `RAPO_PARAM_<NAME>` for every parameter (a secret is better read from there than put on a command line), plus the
+    `env` of the task.
+  * The log keeps what a program writes to stdout (`out`) and stderr (`err`) and what rapo says (`rapo`), as
+    (time, level, stream, text); a secret parameter (3 characters or more) is replaced by `***` in every line, and
+    after `[JOBS] max_output_kb` of output the rest is dropped with one note. Output on stderr is only logged.
+  * SQL: the statements of the task (`split_sql`) run one after another on one connection; a query shows its first 20
+    rows; all are committed at the end, and any error rolls everything back and ends the part. A condition query is
+    run read only (rolled back).
+  * TRANSFER: the param is read with `rapo.transfer.store.read` (file or database), each argument is set over it with
+    `store.set_parameter` (variables filled in), and it runs with `rapo.transfer.engine.execute`; the transfer's own log
+    lines go to the job log, a failed file or any error fails the part.
+  * A run starts by checking its definition against this server again (`validate`, with the files that must exist), so a
+    job whose type left `enabled_types` or whose file left `allowed_dirs` since it was saved is not run.
 * **Failure mail**: any error of any part (PRE, CONDITION evaluation, MAIN, POST, timeout) ends the run as `E`, writes
   the run's message and sends one e-mail with `rapo/core/mailer.py` to `notify_email`, else to `[JOBS] default_email`.
   A run canceled by the user, or Canceled because the condition was not met, because of `overlap` or because the fire
