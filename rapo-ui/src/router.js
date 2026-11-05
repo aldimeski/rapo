@@ -80,6 +80,20 @@ const router = createRouter({
       component: () => import(/* webpackChunkName: "jobs" */ "./components/JobsPage.vue"),
     },
     {
+      name: "edit-job",
+      path: "/edit-job/:name?",
+      meta: { title: "Job", scope: ["jobs", "view"], hideSearch: true },
+      component: () => import(/* webpackChunkName: "job-editor" */ "./components/JobEdit.vue"),
+      props: true,
+      beforeEnter: (to, from, next) => {
+        if (!to.params.name) {
+          next({ path: "/jobs" }); // Redirect to the list if the job is undefined
+        } else {
+          next();
+        }
+      },
+    },
+    {
       name: "transfers",
       path: "/transfers",
       meta: { title: "Transfers", scope: ["datasources", "view"], hideSearch: true },

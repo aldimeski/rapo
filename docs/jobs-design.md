@@ -244,9 +244,24 @@ Step 1 (done): reading and running.
 * `JobRunDialog.vue`: run now with other values of the parameters, for that run only; a secret is empty and keeps its
   saved value unless typed.
 
-Step 2 (next): the editor with the tabs **General** (name, description, notify address, on/off, timeout, overlap,
-parameters), **Pre**, **Condition**, **Main**, **Post**, **Schedule** (the box of the controls), **Versions** and a
-**Check** button.
+Step 2 (done): the editor, `/edit-job/<name>` (`new` for a job that does not exist yet), opened from the name of a job
+and by *New job* (*Jobs: Edit*; a token that may only view gets it read only).
+
+* `JobEdit.vue` with the tabs **General** (name, which is not changed later, description, the address of the failure
+  mail with a note of what an empty one means on this server, on/off, timeout, overlap, parameters with the secret
+  switch), **Pre**, **Condition**, **Main**, **Post**, **Schedule** (the box of the controls, without a cascade) and
+  **Versions** (every version with its definition, and *Load into the editor* to save an older one as a new version). A
+  tab shows whether its optional part is on.
+* `JobTaskEditor.vue`: the type (the types of the OS; one that is not available, or SQL without Free SQL, is listed
+  greyed with the reason) and the settings of the type: SQL in the code box with the variables, a transfer param with its
+  `Name:value` arguments, a program with arguments, a command line, a script as a file or as code, working folder,
+  environment, interpreter or shell. The condition kinds are SQL, the exit code of a program, a file that exists, and a
+  number of files in a folder.
+* **Check** asks the server (`check-job`) whether the definition is fit to run here, and shows every problem; Save,
+  Apply (Ctrl+S) and Cancel as in the other editors, with the same guard against leaving unsaved changes. A save that
+  the server refuses shows its words above the tabs and keeps the form. One save is one version, the schedule included
+  (`save-job` takes the schedule).
+* `utils/job.js` turns a definition into the form (lists as text, one per line) and back.
 
 ## 8. Code and tests
 

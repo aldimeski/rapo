@@ -2823,8 +2823,9 @@ def check_job(data: dict = fastapi.Body(...)):
 @api.post('/save-job', dependencies=JOBS)
 def save_job(data: dict = fastapi.Body(...)):
     """Create or change a job: `name`, `definition` and, when given,
-    `description`, `notify_email` and `status` ('Y' on, 'N' off); what is
-    not given stays. `create` refuses an existing name. A change of the
+    `description`, `notify_email`, `status` ('Y' on, 'N' off) and `schedule`
+    (the units of `save-job-schedule`, null for none); what is not given
+    stays. `create` refuses an existing name. A change of the
     definition makes a new version. Saving SQL needs Free SQL."""
     name = job_answer(job_store.check_name, data.get('name'))
     stored = job_answer(job_store.read_job, name)
@@ -2839,6 +2840,12 @@ def save_job(data: dict = fastapi.Body(...)):
         auth.require_free_sql(auth.current())
     values = {key: data[key] for key in ('description', 'notify_email',
                                          'status') if key in data}
+    if 'schedule' in data:
+        try:
+            values['schedule_config'] = job_store.schedule_json(
+                data['schedule'])
+        except (ValueError, TypeError, AttributeError) as error:
+            raise fastapi.HTTPException(status_code=422, detail=str(error))
     saved = job_answer(job_store.save_job, name, definition,
                        create=bool(data.get('create')), **values)
     job_scheduler.refresh()

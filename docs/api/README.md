@@ -1502,9 +1502,9 @@ Answers `{ok, problems, job_type, definition}`, `definition` being the one with 
 that does not read at all answers `ok` false with its problem.
 
 #### `POST /api/save-job`
-Body `{name, definition, description, notify_email, status, create}`: creates a job, or changes it (the name is not
-changed). `description`, `notify_email` (addresses separated by `,` or `;`) and `status` stay as they were when not
-given; `create` refuses an existing name (`409`). The definition is validated as `check-job` does, without the files
+Body `{name, definition, description, notify_email, status, schedule, create}`: creates a job, or changes it (the name
+is not changed). `description`, `notify_email` (addresses separated by `,` or `;`), `status` and `schedule` (the units
+of `save-job-schedule`, `null` for none) stay as they were when not given; `create` refuses an existing name (`409`). The definition is validated as `check-job` does, without the files
 having to exist yet. A change of the definition makes a new version. Answers the job.
 
 #### `DELETE /api/delete-job`

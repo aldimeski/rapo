@@ -28,6 +28,7 @@
         <q-btn flat dense no-caps icon="fas fa-history" label="All runs" @click="openRuns(null)">
           <q-tooltip>The runs of every job, latest first</q-tooltip>
         </q-btn>
+        <q-btn v-if="$can('jobs', 'edit')" color="teal" no-caps icon="fas fa-plus" label="New job" @click="$router.push({ name: 'edit-job', params: { name: 'new' } })" />
       </div>
       <q-separator />
 
@@ -54,7 +55,7 @@
         <tbody v-else>
           <tr v-for="row in rows" :key="row.job_id" :class="{ 'text-grey-6': row.status === 'N' }">
             <td>
-              <span class="text-weight-bold" :class="row.status === 'N' ? 'text-grey-7' : 'text-blue-grey-9'">{{ row.job_name }}</span>
+              <router-link :to="{ name: 'edit-job', params: { name: row.job_name } }" class="job-link text-weight-bold" :class="row.status === 'N' ? 'text-grey-7' : 'text-blue-grey-9'">{{ row.job_name }}</router-link>
               <q-chip v-if="row.status === 'N'" dense color="grey-6" text-color="white" class="q-ml-sm">Off</q-chip>
               <div v-if="row.description" class="text-grey-7 text-caption">{{ row.description }}</div>
             </td>
@@ -98,6 +99,10 @@
               <q-btn aria-label="More" size="sm" color="grey-7" round flat icon="fas fa-ellipsis-v">
                 <q-menu>
                   <q-list dense class="text-no-wrap">
+                    <q-item clickable v-close-popup @click="$router.push({ name: 'edit-job', params: { name: row.job_name } })">
+                      <q-item-section avatar><q-icon name="fas fa-edit" size="xs" /></q-item-section>
+                      <q-item-section>{{ $can("jobs", "edit") ? "Edit job" : "Open job" }}</q-item-section>
+                    </q-item>
                     <q-item clickable v-close-popup :disable="row.running || !$can('jobs', 'operate')" @click="openRunDialog(row)">
                       <q-item-section avatar><q-icon name="fas fa-sliders-h" size="xs" /></q-item-section>
                       <q-item-section>Run with parameters...</q-item-section>
@@ -344,5 +349,11 @@ export default {
 }
 .schedule-cell {
   min-width: 240px;
+}
+.job-link {
+  text-decoration: none;
+}
+.job-link:hover {
+  text-decoration: underline;
 }
 </style>
