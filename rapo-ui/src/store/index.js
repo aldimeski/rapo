@@ -37,6 +37,7 @@ const store = createStore({
       // Differences between the loaded rapo.ini and the file (get-config-changes), or { error } when unreadable.
       envConfigChanges: null,
       schedulerStatus: null,
+      jobSchedulerStatus: null,
       // The instance health's levels (get-instance-health without history), kept by App for the header dot.
       instanceHealth: null,
       // A request to open Instance details on a tab ({tab}), from a page; App opens it.

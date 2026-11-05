@@ -74,6 +74,12 @@ const router = createRouter({
       component: SchedulerPage,
     },
     {
+      name: "jobs",
+      path: "/jobs",
+      meta: { title: "Jobs", scope: ["jobs", "view"], hideSearch: true },
+      component: () => import(/* webpackChunkName: "jobs" */ "./components/JobsPage.vue"),
+    },
+    {
       name: "transfers",
       path: "/transfers",
       meta: { title: "Transfers", scope: ["datasources", "view"], hideSearch: true },
@@ -164,7 +170,7 @@ const router = createRouter({
 });
 
 // The pages in the order a token without the Dashboard is sent to the first it may open.
-const LANDING_PAGES = ["dashboard", "results", "controls", "kpi-types", "scheduler", "transfers", "files", "datasources"];
+const LANDING_PAGES = ["dashboard", "results", "controls", "kpi-types", "scheduler", "jobs", "transfers", "files", "datasources"];
 
 router.beforeEach(function (to, from, next) {
   if (!store.state.tokenIsValid && to.name !== "token") {
@@ -172,14 +178,15 @@ router.beforeEach(function (to, from, next) {
     return;
   }
   const whoami = store.state.whoami;
-  // The Transfers page is off when the server has [TRANSFER] enabled switched off.
+  // The Transfers and Jobs pages are off when the server has [TRANSFER] or [JOBS] enabled switched off.
   const envInfo = store.state.envInfo;
-  const transfersOff = to.name === "transfers" && envInfo && envInfo.transfers_available === false;
+  const pageOff = (name) => (name === "transfers" && envInfo && envInfo.transfers_available === false) || (name === "jobs" && envInfo && envInfo.jobs_available === false);
+  const transfersOff = pageOff(to.name);
   if (to.name === "token" || (!transfersOff && routeAllowed(whoami, to))) {
     next();
     return;
   }
-  const landing = LANDING_PAGES.filter((name) => !(name === "transfers" && envInfo && envInfo.transfers_available === false))
+  const landing = LANDING_PAGES.filter((name) => !pageOff(name))
     .map((name) => router.resolve({ name })).find((route) => routeAllowed(whoami, route));
   if (landing) {
     next({ name: landing.name, replace: true });

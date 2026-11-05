@@ -47,6 +47,19 @@
           :to="{ name: 'scheduler' }">
           <q-tooltip>Scheduler: {{ schedulerStateInfo.label }} &mdash; {{ schedulerStateInfo.description }}</q-tooltip>
         </q-btn>
+        <!-- The job scheduler has its own indicator: it is independent of the scheduler of the controls. -->
+        <q-btn aria-label="Jobs"
+          v-if="getTokenIsValid && getEnvInfo && getEnvInfo.jobs_available && $can('jobs')"
+          round
+          flat
+          dense
+          size="sm"
+          class="q-ml-sm"
+          :color="jobSchedulerStateInfo.color"
+          icon="fas fa-cogs"
+          :to="{ name: 'jobs' }">
+          <q-tooltip>Job scheduler: {{ jobSchedulerStateInfo.label }} &mdash; {{ jobSchedulerStateInfo.description }}</q-tooltip>
+        </q-btn>
         <!-- The color of the plug is the only sign of the connection: teal connected, red disconnected. -->
         <!-- A dot on it tells that a metric of the instance health reached its warning (amber) or critical (red) level. -->
         <q-btn aria-label="Instance details" v-if="getTokenIsValid && $can('instance')" round flat dense size="sm" class="q-ml-sm" color="teal" icon="fas fa-plug fa-rotate-90" @click="showInstanceDialog">
@@ -236,7 +249,7 @@
 <script>
 import { mapActions, mapGetters, mapState } from "vuex";
 import { api, notifyError, signOut } from "./api";
-import { DATASOURCE_ICON, FILES_ICON, schedulerState } from "./constants";
+import { DATASOURCE_ICON, FILES_ICON, jobSchedulerState, schedulerState } from "./constants";
 import { liveRefetch } from "./socket";
 import { THEMES, applyTheme, readTheme, saveTheme } from "./utils/theme";
 import { HEALTH_TILES, LEVEL_TEXT, tileLevel } from "./utils/health";
@@ -289,7 +302,7 @@ export default {
     };
   },
   methods: {
-    ...mapActions(["updateSearch", "updateSchedulerStatus", "updateEnvironment"]),
+    ...mapActions(["updateSearch", "updateSchedulerStatus", "updateJobSchedulerStatus", "updateEnvironment"]),
     // Collapses the drawer to its icons, or expands it back. Below the drawer breakpoint (500px), where the drawer
     // overlays the page and Quasar ignores mini, it opens and closes it instead.
     toggleLeftDrawer() {
@@ -346,6 +359,20 @@ export default {
         this.stopLiveUpdates();
         this.stopLiveUpdates = null;
       }
+    },
+    // The job scheduler indicator of the header follows the job scheduler, as long as the user is connected.
+    startJobUpdates() {
+      const refresh = () => this.updateJobSchedulerStatus().catch(() => this.$store.commit("updateJobSchedulerStatus", null));
+      this.stopJobUpdates();
+      this.stopJobLive = liveRefetch("jobs:changed", refresh, { interval: 2000 });
+      refresh();
+    },
+    stopJobUpdates() {
+      if (this.stopJobLive) {
+        this.stopJobLive();
+        this.stopJobLive = null;
+      }
+      this.$store.commit("updateJobSchedulerStatus", null);
     },
     // The header dot follows the worst level of the instance health, pushed only when it changes ("health:level").
     startHealthUpdates() {
@@ -416,7 +443,7 @@ export default {
       "getEnvConfigChanges",
     ]),
     // get-instance-health without history: the worst level and the level of each rule, for the header dot.
-    ...mapState(["schedulerStatus", "instanceDialogRequest", "whoami"]),
+    ...mapState(["schedulerStatus", "jobSchedulerStatus", "instanceDialogRequest", "whoami"]),
     signedInName() {
       return this.whoami.master ? "Master token" : this.whoami.user_name;
     },
@@ -474,6 +501,10 @@ export default {
       }
       links.push({ icon: "fas fa-clock", text: "Scheduler", route: "/scheduler", routes: ["scheduler"], gap: true });
       // File transfers (the filetransfer-py logic inside rapo): their params, schedules and runs.
+      // The jobs, between the scheduler and the transfers, when the server has them switched on ([JOBS] enabled).
+      if (this.getEnvInfo && this.getEnvInfo.jobs_available) {
+        links.push({ icon: "fas fa-cogs", text: "Jobs", route: "/jobs", routes: ["jobs"] });
+      }
       // Shown only when the server has them switched on ([TRANSFER] enabled of rapo.ini).
       if (this.getEnvInfo && this.getEnvInfo.transfers_available) {
         links.push({ icon: "fas fa-exchange-alt", text: "Transfers", route: "/transfers", routes: ["transfers"] });
@@ -499,6 +530,9 @@ export default {
     },
     schedulerStateInfo() {
       return schedulerState(this.schedulerStatus && this.schedulerStatus.state);
+    },
+    jobSchedulerStateInfo() {
+      return jobSchedulerState(this.jobSchedulerStatus && this.jobSchedulerStatus.state);
     },
     // The notice of rapo.ini changes on disk: Reload applies those that need no restart.
     configBanner() {
@@ -569,9 +603,13 @@ export default {
           if (this.$can("instance") || this.$can("dashboard")) {
             this.startHealthUpdates();
           }
+          if (this.$can("jobs")) {
+            this.startJobUpdates();
+          }
         } else {
           this.stopSchedulerUpdates();
           this.stopHealthUpdates();
+          this.stopJobUpdates();
         }
       },
     },
@@ -579,6 +617,7 @@ export default {
   unmounted() {
     this.stopSchedulerUpdates();
     this.stopHealthUpdates();
+    this.stopJobUpdates();
   },
 };
 </script>

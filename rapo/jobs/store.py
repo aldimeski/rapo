@@ -412,20 +412,24 @@ def read_runs(job_id=None, limit=100):
 
 
 def read_run(run_id):
-    """Get a run with its log (`run_log`, the lines joined), None when there
-    is none. `log_trimmed` tells that older lines were deleted to keep the
-    newest ones of the job."""
+    """Get a run with its log (`lines`, each with its time, level and stream,
+    and `run_log`, their text joined), None when there is none.
+    `log_trimmed` tells that older lines were deleted to keep the newest
+    ones of the job."""
     row = _execute(sa.select(run_table).where(
         run_table.c.run_id == run_id), as_dict=True)
     if not row:
         return row
-    lines = [item[0] for item in _execute(
-        sa.select(log_table.c.message).where(
+    found = _execute(
+        sa.select(log_table.c.log_time, log_table.c.log_level,
+                  log_table.c.stream, log_table.c.message).where(
             log_table.c.run_id == run_id).order_by(log_table.c.line_no)
-    ).fetchall()]
-    row['run_log'] = '\n'.join(lines)
+    ).fetchall()
+    row['lines'] = [{'time': item[0], 'level': item[1], 'stream': item[2],
+                     'text': item[3]} for item in found]
+    row['run_log'] = '\n'.join(item['text'] for item in row['lines'])
     row['log_trimmed'] = bool(row.get('log_lines')) and \
-        len(lines) < row['log_lines']
+        len(found) < row['log_lines']
     return row
 
 

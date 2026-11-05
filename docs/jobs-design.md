@@ -228,15 +228,25 @@ one (`definition.mask_secrets`, `restore_secrets`).
 ## 7. UI
 
 Menu item **Jobs** between *Scheduler* and *Transfers* (`/jobs`, shown when `jobs_available` of `/api/info` is true and
-the token may view the area). The page has:
+the token may view the area; its own indicator in the header, a cogs button coloured by the state of the job
+scheduler). It is built in two steps.
 
-* a status bar of the job scheduler (state, holder, parallelism and queue, stop/start) and its own indicator in the
-  header like the one of the Scheduler;
-* the list of jobs: name, type, where it runs (on/off), schedule, next start, last run and its status, filters;
-* the editor with the tabs **General** (name, description, notify address, on/off, timeout, overlap, parameters),
-  **Pre**, **Condition**, **Main**, **Post**, **Schedule** (the box of the controls), **Versions** and a **Check**
-  button;
-* the run history of a job (dialog like the Transfers one) with the stage reached, the exit code and the log.
+Step 1 (done): reading and running.
+
+* `JobsPage.vue`: a status bar of the job scheduler (`JobSchedulerBar.vue`: its state, the server that schedules, the
+  slots of the job manager, the next fire, and stop/start for tokens with *Jobs: Operate*); filter chips (all, on, off,
+  scheduled, running, failed) and a search; the list with the name and description, the type, the schedule, the next
+  start and the last run (status, the part it got to, the exit code, whether the failure mail went); run now / cancel,
+  and a menu: run with parameters, run history, switch on/off, delete (*Jobs: Edit*). A note says when the failure mail
+  is off in `rapo.ini` or jobs have no address for it. It follows `jobs:changed` and polls every 10 seconds.
+* `JobRunsDialog.vue`: the runs of one job or of all, and the log of the one picked, its lines coloured by what wrote
+  them (stderr, an error of rapo, a note of rapo), the message, what became of the failure mail, and cancel.
+* `JobRunDialog.vue`: run now with other values of the parameters, for that run only; a secret is empty and keeps its
+  saved value unless typed.
+
+Step 2 (next): the editor with the tabs **General** (name, description, notify address, on/off, timeout, overlap,
+parameters), **Pre**, **Condition**, **Main**, **Post**, **Schedule** (the box of the controls), **Versions** and a
+**Check** button.
 
 ## 8. Code and tests
 

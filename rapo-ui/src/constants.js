@@ -139,6 +139,39 @@ export function schedulerState(state) {
   return SCHEDULER_STATES[state] || { label: state || "Unknown", color: "grey", description: "" };
 }
 
+// The state of the job scheduler (job-scheduler-status), worded for the jobs.
+export const JOB_SCHEDULER_STATES = {
+  running: { label: "Running", color: "teal", description: "This server schedules the jobs." },
+  standby: { label: "Standby", color: "blue-grey", description: "Another server schedules the jobs, this one takes over if it stops." },
+  starting: { label: "Starting", color: "amber-8", description: "The job scheduler is acquiring its lease." },
+  stopped: { label: "Stopped", color: "deep-orange", description: "The job scheduler was stopped from the UI on all servers." },
+  off: { label: "Off", color: "grey", description: "The job scheduler is disabled for this server (rapo.ini or development mode)." },
+};
+
+export function jobSchedulerState(state) {
+  return JOB_SCHEDULER_STATES[state] || { label: state || "Unknown", color: "grey", description: "" };
+}
+
+// What the main task of a job is (rapo_job.job_type).
+export const JOB_TYPES = {
+  SQL: { label: "SQL", icon: "fas fa-database", color: "indigo-5" },
+  TRANSFER: { label: "Transfer", icon: "fas fa-exchange-alt", color: "teal-6" },
+  EXECUTABLE: { label: "Program", icon: "fas fa-cog", color: "blue-grey-6" },
+  COMMAND: { label: "Command", icon: "fas fa-terminal", color: "blue-grey-7" },
+  PYTHON: { label: "Python", icon: "fas fa-code", color: "blue-7" },
+  PERL: { label: "Perl", icon: "fas fa-code", color: "deep-purple-4" },
+  SHELL: { label: "Shell", icon: "fas fa-terminal", color: "green-8" },
+  BATCH: { label: "Batch", icon: "fas fa-file-code", color: "amber-9" },
+  POWERSHELL: { label: "PowerShell", icon: "fas fa-terminal", color: "light-blue-8" },
+};
+
+export function jobType(type) {
+  return JOB_TYPES[type] || { label: type || "Unknown", icon: "fas fa-question-circle", color: "grey" };
+}
+
+// The parts of a run in order: where it got to (rapo_job_run.stage).
+export const JOB_STAGES = { PRE: "Pre", CONDITION: "Condition", MAIN: "Main", POST: "Post" };
+
 // How often a control runs (utils/schedule.js scheduleFrequency, plus chain for a control only pulled by the
 // controls reading its results): the avatar color of the Controls schedule column. Its icon is the source of the next
 // run (FIRE_SOURCES).

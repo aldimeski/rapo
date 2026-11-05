@@ -535,6 +535,9 @@ class StoreTests(unittest.TestCase):
         self.assertEqual(store.read_run(second)['run_log'], 'two\nthree')
         older = store.read_run(first)
         self.assertEqual(older['run_log'], 'one\nboom')
+        self.assertEqual([(item['stream'], item['level'], item['text'])
+                          for item in older['lines']],
+                         [('out', 'INFO', 'one'), ('err', 'ERROR', 'boom')])
         self.assertTrue(older['log_trimmed'])
         self.assertFalse(store.read_run(second)['log_trimmed'])
 

@@ -1537,9 +1537,9 @@ the job was still running, or the run was canceled), `stage` (the last part star
 `log_lines`, `mail_status` (what became of the failure e-mail of an error).
 
 #### `GET /api/get-job-run`
-`run_id`: one run with its log, `run_log` (one line per line of the program's stdout and stderr and of rapo, secret
-values replaced by `***`); `log_trimmed` tells that the oldest lines were deleted to keep the newest
-`[JOBS] log_max_lines` of the job.
+`run_id`: one run with its log: `lines` (`{time, level, stream, text}`; `stream` is `out` or `err` for what the program
+wrote and `rapo` for what rapo says) and `run_log`, their text joined; secret values are replaced by `***`.
+`log_trimmed` tells that the oldest lines were deleted to keep the newest `[JOBS] log_max_lines` of the job.
 
 #### `GET /api/get-job-versions`
 `name`: the versions of a job, the newest first: `version`, `definition`, `schedule_config`, `updated_date`,
