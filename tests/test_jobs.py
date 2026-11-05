@@ -685,5 +685,34 @@ class StoreHelperTests(unittest.TestCase):
         self.assertEqual(names, ['one', None, 'one'])
 
 
+class TransferUsageTests(unittest.TestCase):
+    def setUp(self):
+        db.engine.dispose()
+        store.metadata.drop_all(db.engine)
+        store.metadata.create_all(db.engine)
+
+    def save(self, name, **parts):
+        value = {'main': {'type': 'SQL', 'text': 'commit'}}
+        value.update(parts)
+        return store.save_job(name, value, ctx=context())
+
+    def test_which_jobs_run_which_param(self):
+        transfer = lambda param: {'type': 'TRANSFER', 'param': param}  # noqa: E731
+        self.save('a', main=transfer('daily'))
+        self.save('b', main=transfer('daily'), post=transfer('archive'))
+        self.save('c', pre=transfer(' daily '))
+        self.save('d')
+        self.assertEqual(store.read_transfer_usage(), {
+            'daily': ['a', 'b', 'c'], 'archive': ['b']})
+
+    def test_a_job_that_runs_a_param_twice_counts_once(self):
+        transfer = {'type': 'TRANSFER', 'param': 'daily'}
+        self.save('a', pre=transfer, main=transfer, post=transfer)
+        self.assertEqual(store.read_transfer_usage(), {'daily': ['a']})
+
+    def test_nothing_when_there_are_no_jobs(self):
+        self.assertEqual(store.read_transfer_usage(), {})
+
+
 if __name__ == '__main__':
     unittest.main()

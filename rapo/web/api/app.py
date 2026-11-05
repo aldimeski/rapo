@@ -2548,36 +2548,23 @@ def get_transfers(rescan: bool = False):
     return answer
 
 
-@api.get('/get-transfer-catalogue',
-         dependencies=[fastapi.Depends(require_transfers)])
-def get_transfer_catalogue():
-    """Get the parameters a transfer can have, in the order they are written:
-    name, group, kind of value, default, whether it is required and its
-    description, which the param editor is built from."""
+def transfer_catalogue_answer():
+    """The parameters a transfer can have, for the param editor."""
     return {'groups': transfer_catalogue.GROUPS,
             'parameters': transfer_catalogue.parameters()}
 
 
-@api.get('/get-transfer',
-         dependencies=[fastapi.Depends(require_transfers)])
-def get_transfer(name: str):
-    """Get the text of a param, where it is kept, its description and its
-    schedule in rapo."""
+def transfer_param_answer(name):
+    """A param: its name, text, where it is kept and its description."""
     name = transfer_answer(transfer_store.check_name, name)
     text, source = transfer_answer(transfer_store.read, name)
-    planned = transfers.read_schedules().get(name)
     return {'param_name': name, 'text': text, 'source': source,
             'description': transfer_store.description(name)
-            if source == transfer_store.DATABASE else None,
-            'schedule': {'config': planned['config'],
-                         'enabled': planned['enabled']} if planned else None}
+            if source == transfer_store.DATABASE else None}
 
 
-@api.post('/validate-transfer',
-         dependencies=[fastapi.Depends(require_transfers)])
-def validate_transfer(data: dict = fastapi.Body(...)):
-    """Check the text of a param and show what its date tokens expand to
-    now (`now`, "YYYY-MM-DD HH:MM:SS", tries another moment)."""
+def transfer_validation_answer(data):
+    """Check the text of a param and show what its date tokens expand to."""
     moment = dt.datetime.now()
     if data.get('now'):
         try:
@@ -2592,6 +2579,35 @@ def validate_transfer(data: dict = fastapi.Body(...)):
             'file_creation_date_expanded': cfg.date_spec_expanded or None,
             'input_dir': cfg.input_dir, 'output_dirs': cfg.output_dirs,
             'sftp': cfg.sftp}
+
+
+@api.get('/get-transfer-catalogue',
+         dependencies=[fastapi.Depends(require_transfers)])
+def get_transfer_catalogue():
+    """Get the parameters a transfer can have, in the order they are written:
+    name, group, kind of value, default, whether it is required and its
+    description, which the param editor is built from."""
+    return transfer_catalogue_answer()
+
+
+@api.get('/get-transfer',
+         dependencies=[fastapi.Depends(require_transfers)])
+def get_transfer(name: str):
+    """Get the text of a param, where it is kept, its description and its
+    schedule in rapo."""
+    answer = transfer_param_answer(name)
+    planned = transfers.read_schedules().get(answer['param_name'])
+    answer['schedule'] = {'config': planned['config'],
+                          'enabled': planned['enabled']} if planned else None
+    return answer
+
+
+@api.post('/validate-transfer',
+         dependencies=[fastapi.Depends(require_transfers)])
+def validate_transfer(data: dict = fastapi.Body(...)):
+    """Check the text of a param and show what its date tokens expand to
+    now (`now`, "YYYY-MM-DD HH:MM:SS", tries another moment)."""
+    return transfer_validation_answer(data)
 
 
 @api.post('/save-transfer',
@@ -2949,6 +2965,71 @@ def get_job_versions(name: str):
         item['definition'] = job_definition.mask_secrets(
             json.loads(item['definition']))
     return versions
+
+
+# The params a TRANSFER task runs. A job may use a transfer whether or not the
+# Transfers page is switched on ([TRANSFER] enabled), so a job's editor has
+# routes of its own for them, under the area of the jobs. A param made here is
+# kept in the database, where the Transfers page shows it when it is on.
+
+@api.get('/get-job-transfer-params', dependencies=JOBS)
+def get_job_transfer_params():
+    """Get the params a TRANSFER task may run, those kept as files and those
+    in the database, each with its description and the jobs that run it."""
+    files = transfer_store.read_files()
+    database = transfer_store.read_database()
+    used = job_answer(job_store.read_transfer_usage)
+    params = []
+    for name in sorted(set(files) | set(database or {})):
+        in_file, in_database = name in files, name in (database or {})
+        params.append({
+            'param_name': name,
+            'source': 'both' if in_file and in_database
+            else 'file' if in_file else 'db',
+            'description': (database or {}).get(name, {}).get('description'),
+            'used_by': used.get(name, [])})
+    return {'params': params, 'param_dir': bool(transfer_store.param_dir()),
+            'database_available': database is not None}
+
+
+@api.get('/get-job-transfer-catalogue', dependencies=JOBS)
+def get_job_transfer_catalogue():
+    """Get the parameters a transfer can have, for the param editor."""
+    return transfer_catalogue_answer()
+
+
+@api.get('/get-job-transfer', dependencies=JOBS)
+def get_job_transfer(name: str):
+    """Get a param with its text, where it is kept and the jobs that run it.
+    One kept in a file is only read here."""
+    answer = transfer_param_answer(name)
+    answer['used_by'] = job_answer(job_store.read_transfer_usage).get(
+        answer['param_name'], [])
+    return answer
+
+
+@api.post('/validate-job-transfer', dependencies=JOBS)
+def validate_job_transfer(data: dict = fastapi.Body(...)):
+    """Check the text of a param and show what its date tokens expand to."""
+    return transfer_validation_answer(data)
+
+
+@api.post('/save-job-transfer', dependencies=JOBS)
+def save_job_transfer(data: dict = fastapi.Body(...)):
+    """Create a param in the database, or change one kept there: `name`,
+    `text`, `description`, and `create` to refuse an existing name. A param
+    kept in a file is not written here (409): it is changed where it is."""
+    name = transfer_answer(transfer_store.check_name, data.get('name'))
+    if transfer_store.FILE in transfer_store.exists(name):
+        raise fastapi.HTTPException(
+            status_code=409,
+            detail=f'Param {name} is kept in a file: change the file, or '
+                   'move the param to the database on the Transfers page.')
+    transfer_answer(transfer_store.write, name, data.get('text'),
+                    transfer_store.DATABASE, note=data.get('description'),
+                    create=bool(data.get('create')))
+    transfers.invalidate()
+    return {'status': 200, 'param_name': name}
 
 
 @api.get('/job-scheduler-status', dependencies=JOBS)

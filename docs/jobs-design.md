@@ -262,6 +262,11 @@ and by *New job* (*Jobs: Edit*; a token that may only view gets it read only).
   the server refuses shows its words above the tabs and keeps the form. One save is one version, the schedule included
   (`save-job` takes the schedule).
 * `utils/job.js` turns a definition into the form (lists as text, one per line) and back.
+* A TRANSFER task has **New param...** and **Edit param...** beside the param it runs: the dialog of the Transfers page, in a
+  mode of its own (`job-mode`) that uses the routes of the jobs, so it works while the Transfers page is off, keeps a
+  new param in the database only, and reads a param kept in a file without changing it. A new param is named after the
+  job (`<job>-param`). Changing a param says which other jobs run it. The list of params to pick from comes from
+  `get-job-transfer-params`, files and database, with the jobs that run each.
 
 ## 8. Code and tests
 

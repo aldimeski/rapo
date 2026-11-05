@@ -53,7 +53,7 @@ A scope is a level per area; a level includes the ones below it (`none` < `view`
 | `controls`    | view, edit                | `get-all-controls`, `get-schema-drift`, `get-control-versions`, datasource and view reads, `schedule-preview`, `get-next-fires` | | `save-control`, `delete-control`, schema update/recreate/check, orphan and output table drops, version deletes, `send-test-email`, `compile-view` |
 | `kpis`        | view, operate, edit       | KPI types, a control's KPIs, KPI history and runs, orphan list | `calculate-kpi`, `reingest-kpis`                           | `save-kpi-type`, `delete-kpi-type`, orphan KPI deletes/reassigns |
 | `scheduler`   | view, operate             | `scheduler-status`, `-upcoming`, `-events`, `get-missed-fires` | `scheduler-stop`, `scheduler-start`                        |                                                   |
-| `jobs`        | view, operate, edit       | `get-jobs`, `get-job`, `get-job-catalogue`, `get-job-runs`, `get-job-run`, `get-job-versions`, `job-scheduler-status`, `-upcoming`, `-events` | `run-job`, `cancel-job-run`, `set-job-status`, `job-scheduler-stop`, `job-scheduler-start` | `save-job`, `delete-job`, `save-job-schedule`, `check-job` |
+| `jobs`        | view, operate, edit       | `get-jobs`, `get-job`, `get-job-catalogue`, `get-job-runs`, `get-job-run`, `get-job-versions`, `job-scheduler-status`, `-upcoming`, `-events`, `get-job-transfer-params`, `-catalogue`, `get-job-transfer` | `run-job`, `cancel-job-run`, `set-job-status`, `job-scheduler-stop`, `job-scheduler-start` | `save-job`, `delete-job`, `save-job-schedule`, `check-job`, `validate-job-transfer`, `save-job-transfer` |
 | `datasources` | view, edit                | PDI Core datasources, directories, incoming files, archive, grammars, viewer settings |                       | Their saves and deletes, lanes (`set-ds-active`), directories, grammars, viewer settings |
 | `files`       | view, operate             | The file log: `get-files-day`, `get-ds-file-log(-text)`, `search-files`, `get-pdi-state` | `set-file-status`, lane locks, `check-ds-upload`, `upload-ds-file`, `refresh-file-summary` | |
 | `instance`    | view, operate, edit       | `parameters`, health and sessions, `get-config-catalogue`, `get-config-changes`, `get-temp-tables` | `drop-temp-tables`                | `set-config-option`, `reload-config`              |
@@ -1559,6 +1559,23 @@ in `rapo.ini`). The scheduler of the controls is not touched.
 #### `GET /api/job-scheduler-events`
 `job_name`, `event_type` (`FIRED`, `STARTED`, `MISSED`, `FAILED`, `CANCELED`), `trigger_type`, `hours`, `limit` (500):
 what the job scheduler did, latest first, with `job_name`, `run_id`, `message` and `runner`.
+
+#### The params of a TRANSFER task
+A job may run a transfer param (a file of `[TRANSFER] param_dir` or a row of `rapo_transfer_param`, see
+[docs/transfer.md](../transfer.md)) whether or not the Transfers page is switched on, so its editor has routes of its own
+for them, under *Jobs* and not under *Datasources*; they work while `[TRANSFER] enabled` is off. A param made here is
+kept in the **database**; the Transfers page lists it when it is on, without a schedule of its own (the job is
+scheduled).
+
+* `GET /api/get-job-transfer-params`: `params`, each `{param_name, source ('file', 'db' or 'both'), description,
+  used_by}` (the names of the jobs that run it), and `param_dir` (whether `[TRANSFER] param_dir` is set) and
+  `database_available`.
+* `GET /api/get-job-transfer-catalogue`: the parameters a transfer can have, as `get-transfer-catalogue`.
+* `GET /api/get-job-transfer`: `name`: `{param_name, text, source, description, used_by}`.
+* `POST /api/validate-job-transfer`: body `{text, now}`: checks a param without saving it, as `validate-transfer`.
+* `POST /api/save-job-transfer`: body `{name, text, description, create}`: creates a param in the database, or changes
+  one kept there; `create` refuses an existing name (`409`). A param kept in a file is not written here (`409`): it is
+  changed in its file, or moved to the database on the Transfers page. An invalid param is `400`.
 
 ### Service
 

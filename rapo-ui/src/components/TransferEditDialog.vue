@@ -2,7 +2,7 @@
   <q-dialog v-model="visible" persistent @show="open">
     <q-card class="column no-wrap" style="width: 900px; max-width: 95vw; max-height: 92vh">
       <q-card-section class="row items-center q-py-sm">
-        <div class="text-h6">{{ isNew ? "New transfer" : readonly ? "Transfer " + name : "Edit transfer " + name }}</div>
+        <div class="text-h6">{{ isNew ? (jobMode ? "New transfer param" : "New transfer") : readonly ? "Transfer " + name : "Edit transfer " + name }}</div>
         <q-chip v-if="!isNew && source" dense class="q-ml-md">{{ source === "file" ? "File" : "Database" }}</q-chip>
         <q-space />
         <q-btn-toggle
@@ -28,7 +28,7 @@
         <div class="row q-gutter-md">
           <q-input v-model="form.name" class="col" outlined dense label="Param name" :disable="!isNew" :rules="[(val) => /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(val || '') || 'Letters, digits, dots, hyphens, underscores']" lazy-rules />
           <q-btn-toggle
-            v-if="isNew"
+            v-if="isNew && !jobMode"
             v-model="form.where"
             no-caps
             unelevated
@@ -40,6 +40,14 @@
             <template v-slot:default><q-tooltip>Where the param is kept; it can be moved later</q-tooltip></template>
           </q-btn-toggle>
         </div>
+        <q-banner v-if="jobMode && source === 'file'" dense class="bg-blue-grey-1 text-blue-grey-10">
+          <template v-slot:avatar><q-icon name="fas fa-file-alt" size="xs" /></template>
+          This param is kept in a file in <code>[TRANSFER] param_dir</code>: it is read here, and changed in the file or on the Transfers page.
+        </q-banner>
+        <q-banner v-else-if="jobMode && !isNew" dense class="bg-blue-grey-1 text-blue-grey-10">
+          <template v-slot:avatar><q-icon name="fas fa-database" size="xs" /></template>
+          Kept in the database. A change is for every job and transfer that runs it<template v-if="otherJobs.length">; also run by the job{{ otherJobs.length === 1 ? "" : "s" }}: <strong>{{ otherJobs.join(", ") }}</strong></template>.
+        </q-banner>
         <q-input v-if="form.where === 'db' || source === 'db'" v-model="form.description" outlined dense label="Description" maxlength="500" :readonly="readonly" />
 
         <transfer-param-table v-if="view === 'table' && catalogue" v-model="form.items" :catalogue="catalogue" :editable="!readonly" :storage="storage" @update:model-value="checked = null" />
@@ -116,6 +124,12 @@ export default {
     name: { type: String, default: null },
     paramDir: { type: String, default: null },
     databaseAvailable: { type: Boolean, default: true },
+    // Opened from the editor of a job: the routes of the jobs (which work while the Transfers page is off), a new param
+    // is kept in the database only, a param kept in a file is read only. `suggestedName` is the name a new param gets,
+    // and `currentJob` is left out of the jobs said to run the param too.
+    jobMode: { type: Boolean, default: false },
+    suggestedName: { type: String, default: "" },
+    currentJob: { type: String, default: "" },
   },
   emits: ["update:modelValue", "saved"],
   data() {
@@ -128,6 +142,8 @@ export default {
       problem: null,
       view: "table",
       catalogue: null,
+      // The jobs that run the param (jobMode).
+      usedBy: [],
       // The lines of the text as opened, so that saving from the table keeps its comments.
       lines: [],
       form: { name: "", where: "file", description: "", text: "", items: [] },
@@ -150,7 +166,19 @@ export default {
       return this.isNew ? this.form.where : this.source;
     },
     readonly() {
+      if (this.jobMode) {
+        return !this.$can("jobs", "edit") || this.source === "file";
+      }
       return !this.$can("datasources", "edit");
+    },
+    // The routes of the Transfers page, or of the jobs.
+    routes() {
+      return this.jobMode
+        ? { catalogue: "get-job-transfer-catalogue", get: "get-job-transfer", validate: "validate-job-transfer", save: "save-job-transfer" }
+        : { catalogue: "get-transfer-catalogue", get: "get-transfer", validate: "validate-transfer", save: "save-transfer" };
+    },
+    otherJobs() {
+      return this.usedBy.filter((job) => job !== this.currentJob);
     },
     canSave() {
       return /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(this.form.name || "") && !!this.currentText().trim();
@@ -195,15 +223,16 @@ export default {
       this.loading = true;
       try {
         if (!catalogueCache) {
-          catalogueCache = (await api("get-transfer-catalogue", { loadingBar: false })).parameters;
+          catalogueCache = (await api(this.routes.catalogue, { loadingBar: false })).parameters;
         }
         this.catalogue = catalogueCache;
         if (this.isNew) {
           // Every parameter, with its default for the one that has it.
           this.lines = [];
-          const where = this.paramDir ? "file" : "db";
+          const where = this.paramDir && !this.jobMode ? "file" : "db";
+          this.usedBy = [];
           this.form = {
-            name: "",
+            name: this.jobMode ? this.suggestedName : "",
             where,
             description: "",
             text: "",
@@ -212,8 +241,9 @@ export default {
           };
           return;
         }
-        const param = await api("get-transfer", { params: { name: this.name } });
+        const param = await api(this.routes.get, { params: { name: this.name } });
         this.source = param.source;
+        this.usedBy = param.used_by || [];
         this.lines = parseParam(param.text);
         this.form = { name: param.param_name, where: param.source, description: param.description || "", text: param.text, items: itemsOf(this.lines) };
       } catch (error) {
@@ -232,7 +262,7 @@ export default {
       this.checked = null;
       this.problem = null;
       try {
-        this.checked = await api("validate-transfer", { method: "POST", body: { text: this.currentText() } });
+        this.checked = await api(this.routes.validate, { method: "POST", body: { text: this.currentText() } });
       } catch (error) {
         this.problem = error.message;
       } finally {
@@ -243,12 +273,12 @@ export default {
       this.saving = true;
       this.problem = null;
       try {
-        await api("save-transfer", {
+        await api(this.routes.save, {
           method: "POST",
           body: { name: this.form.name, text: this.currentText(), where: this.isNew ? this.form.where : this.source, description: this.form.description, create: this.isNew },
         });
         this.$q.notify({ type: "positive", message: `${this.form.name} saved.` });
-        this.$emit("saved");
+        this.$emit("saved", this.form.name);
         this.visible = false;
       } catch (error) {
         this.problem = error.message;

@@ -116,7 +116,7 @@
                 <div class="text-caption text-grey-7">
                   The task prepares what the condition and the main task need. If it fails, the run ends as an error and nothing else runs.
                 </div>
-                <job-task-editor v-if="form.def.pre.on" v-model="form.def.pre.task" :catalogue="catalogue" :parameter-names="parameterNames" type-label="Type of the pre task" />
+                <job-task-editor v-if="form.def.pre.on" v-model="form.def.pre.task" :catalogue="catalogue" :parameter-names="parameterNames" :job-name="form.name" type-label="Type of the pre task" />
               </div>
             </q-tab-panel>
 
@@ -148,7 +148,7 @@
                     v-model="form.def.condition.task"
                     :catalogue="catalogue"
                     :types="exitCodeTypes"
-                    :parameter-names="parameterNames"
+                    :parameter-names="parameterNames" :job-name="form.name"
                     type-label="Type of the program" />
                   <template v-else-if="form.def.condition.kind === 'FILE_EXISTS'">
                     <q-input v-model="form.def.condition.path" outlined dense label="File or folder" input-class="mono" hint="Date tokens like <YYYYMMDD> and {variables} are filled in" />
@@ -177,7 +177,7 @@
             <q-tab-panel name="main">
               <div class="q-ma-lg q-gutter-y-md panel-width">
                 <div class="text-caption text-grey-7">What the job does. It succeeds when its exit code is 0 (SQL and transfers: when they raise no error); anything on stderr is only logged.</div>
-                <job-task-editor v-model="form.def.main" :catalogue="catalogue" :parameter-names="parameterNames" type-label="Type of the job" />
+                <job-task-editor v-model="form.def.main" :catalogue="catalogue" :parameter-names="parameterNames" :job-name="form.name" type-label="Type of the job" />
               </div>
             </q-tab-panel>
 
@@ -188,7 +188,7 @@
                 <div class="text-caption text-grey-7">
                   It runs only when the main task succeeded. If it fails the run ends as an error, but the result of the main task stays as it was.
                 </div>
-                <job-task-editor v-if="form.def.post.on" v-model="form.def.post.task" :catalogue="catalogue" :parameter-names="parameterNames" type-label="Type of the post task" />
+                <job-task-editor v-if="form.def.post.on" v-model="form.def.post.task" :catalogue="catalogue" :parameter-names="parameterNames" :job-name="form.name" type-label="Type of the post task" />
               </div>
             </q-tab-panel>
 

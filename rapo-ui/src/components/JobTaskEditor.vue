@@ -48,6 +48,23 @@
         hint="The name of a param kept as a file or in the database"
         @filter="filterParams"
         @input-value="(value) => (task.param = value)" />
+      <div class="row items-center q-gutter-sm">
+        <q-btn v-if="$can('jobs', 'edit')" flat dense no-caps color="primary" icon="fas fa-plus" label="New param..." @click="openParam(null)">
+          <q-tooltip>Make a param in the database for this job to run</q-tooltip>
+        </q-btn>
+        <q-btn flat dense no-caps color="primary" icon="fas fa-edit" :label="$can('jobs', 'edit') && !paramInFile ? 'Edit param...' : 'View param...'" :disable="!paramKnown" @click="openParam(task.param)" />
+        <span v-if="paramKnown && paramInfo.used_by.length" class="text-caption text-grey-7">Run by: {{ paramInfo.used_by.join(", ") }}</span>
+        <span v-else-if="task.param && params.length && !paramKnown" class="text-caption text-deep-orange-9">There is no param of this name yet.</span>
+      </div>
+      <transfer-edit-dialog
+        v-model="paramOpen"
+        job-mode
+        :name="paramName"
+        :suggested-name="suggestedName"
+        :current-job="jobName"
+        :param-dir="paramDir"
+        :database-available="databaseAvailable"
+        @saved="paramSaved" />
       <q-input v-model="task.arguments_text" outlined dense type="textarea" autogrow input-class="mono" label="Arguments" hint="Name:value, one per line, replace parameters of the param for this job only, e.g. FileMask:&lt;YYYYMMDD-1d&gt;\.csv" />
     </template>
 
@@ -94,6 +111,7 @@
 
 <script>
 import CodeBox from "./CodeBox.vue";
+import TransferEditDialog from "./TransferEditDialog.vue";
 import { api } from "../api";
 import { JOB_TYPES } from "../constants";
 import { SHELLS, emptyTask } from "../utils/job";
@@ -101,7 +119,7 @@ import { SHELLS, emptyTask } from "../utils/job";
 // One task of a job (its pre or post part, its main task, or the program of a condition): its type and the settings
 // of the type. The task is edited in place, in the form of utils/job.js.
 export default {
-  components: { CodeBox },
+  components: { CodeBox, TransferEditDialog },
   props: {
     // The task form of utils/job.js, edited in place.
     modelValue: { type: Object, required: true },
@@ -112,9 +130,11 @@ export default {
     // The names of the job's parameters, offered as variables.
     parameterNames: { type: Array, default: () => [] },
     typeLabel: { type: String, default: "Type" },
+    // The job being edited: it names a new transfer param, and is left out of the jobs said to run one.
+    jobName: { type: String, default: "" },
   },
   data() {
-    return { params: [], paramOptions: [] };
+    return { rows: [], paramOptions: [], paramDir: null, databaseAvailable: true, paramOpen: false, paramName: null };
   },
   computed: {
     task() {
@@ -154,6 +174,21 @@ export default {
     shells() {
       return SHELLS[this.task.type] || [];
     },
+    params() {
+      return this.rows.map((row) => row.param_name);
+    },
+    paramInfo() {
+      return this.rows.find((row) => row.param_name === (this.task.param || "").trim()) || null;
+    },
+    paramKnown() {
+      return Boolean(this.paramInfo);
+    },
+    paramInFile() {
+      return Boolean(this.paramInfo) && this.paramInfo.source !== "db";
+    },
+    suggestedName() {
+      return this.jobName ? `${this.jobName}-param` : "";
+    },
     foldersHint() {
       const folders = this.catalogue && this.catalogue.allowed_dirs;
       return folders && folders.length ? `An absolute path below ${folders.join(", ")}` : "An absolute path; [JOBS] allowed_dirs is not set in rapo.ini, so no file is accepted yet";
@@ -181,18 +216,27 @@ export default {
         this.paramOptions = this.params.filter((name) => name.toLowerCase().includes(needle));
       });
     },
-    // The params of the Transfers page, when this token and this server have it; else the name is typed.
+    // The params a transfer task may run, files and database, whether or not the Transfers page is on.
     async loadParams() {
-      if (!this.$store.getters.getEnvInfo || !this.$store.getters.getEnvInfo.transfers_available || !this.$can("datasources", "view")) {
-        return;
-      }
       try {
-        const answer = await api("get-transfers", { loadingBar: false });
-        this.params = answer.params.filter((row) => row.source === "file" || row.source === "db").map((row) => row.param_name);
+        const answer = await api("get-job-transfer-params", { loadingBar: false });
+        this.rows = answer.params;
+        this.paramDir = answer.param_dir ? "set" : null;
+        this.databaseAvailable = answer.database_available;
         this.paramOptions = this.params;
       } catch (error) {
         // The name is typed.
       }
+    },
+    // A new param (name null), or the one named, in the dialog of the transfers.
+    openParam(name) {
+      this.paramName = name ? name.trim() : null;
+      this.paramOpen = true;
+    },
+    // A param made or changed: it is the one the task runs now.
+    async paramSaved(name) {
+      await this.loadParams();
+      this.task.param = name;
     },
   },
   mounted() {

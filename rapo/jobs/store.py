@@ -201,6 +201,29 @@ def schedule_json(units):
                        for unit in core_schedule.UNITS})
 
 
+def read_transfer_usage():
+    """Get {param name: [names of the jobs that run it]}, the jobs by name.
+    A job counts for a param when its pre, main or post task is a TRANSFER
+    of it."""
+    rows = _execute(sa.select(job_table.c.job_name,
+                              job_table.c.definition).order_by(
+        job_table.c.job_name), as_table=True)
+    usage = {}
+    for row in rows:
+        try:
+            definition = json.loads(_text(row['definition']))
+        except ValueError:
+            continue
+        names = set()
+        for part in ('pre', 'main', 'post'):
+            task = definition.get(part)
+            if isinstance(task, dict) and task.get('type') == 'TRANSFER'                     and task.get('param'):
+                names.add(str(task['param']).strip())
+        for name in names:
+            usage.setdefault(name, []).append(row['job_name'])
+    return usage
+
+
 def read_job_by_id(job_id):
     """Get the job with its definition (JSON text), None when there is
     none."""
