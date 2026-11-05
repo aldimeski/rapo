@@ -204,12 +204,12 @@ manager are off, as for the transfers. The default is `True` (decided), unlike `
 
 ## 6. API and access
 
-Routes (names as the others, all under `/api`): `get-jobs`, `get-job`, `get-job-catalogue` (types of this server,
-interpreters, condition kinds, defaults), `check-job` (validates a definition without saving or running),
-`save-job`, `delete-job`, `set-job-status` (on/off), `save-job-schedule`, `run-job` (with `parameters` overrides for
-this run), `cancel-job-run`, `get-job-runs`, `get-job-run` (with log), `get-job-versions`, `get-job-upcoming`,
-`job-scheduler-status`, `job-scheduler-start`, `job-scheduler-stop`; live events `jobs:changed` and
-`jobs-scheduler:changed` through the socket, as `scheduler:changed`.
+Routes (all under `/api`, described in [docs/api](api/README.md#jobs)): `get-jobs`, `get-job`, `get-job-catalogue`,
+`check-job` (validates a definition without saving or running it), `save-job`, `delete-job`, `set-job-status`,
+`save-job-schedule`, `run-job` (with `parameters` for that run), `cancel-job-run`, `get-job-runs`, `get-job-run`,
+`get-job-versions`, `job-scheduler-status`, `job-scheduler-start`, `job-scheduler-stop`, `job-scheduler-upcoming`,
+`job-scheduler-events`; and the live event `jobs:changed` through the socket, to the connections that may view the
+area. While `[JOBS] enabled` is off they answer 404, and `/api/info` has `jobs_available`.
 
 A new area in `rapo/web/api/scopes.py`: `'jobs': ('Jobs', ('none', 'view', 'operate', 'edit'))` with
 
@@ -220,8 +220,10 @@ A new area in `rapo/web/api/scopes.py`: `'jobs': ('Jobs', ('none', 'view', 'oper
 | `edit` | also create, change, delete jobs (and see/test with *Check*) |
 
 `edit` belongs only to the `full` preset (decided); `viewer` gets `view`, `operator` gets `operate`, `editor` none. Saving
-a job whose parts include SQL needs **Free SQL** too (`NEEDS_FREE_SQL`), because the SQL runs as the schema owner.
-Every secret parameter is returned masked.
+a job whose definition has SQL in it (a SQL task or a SQL condition) needs **Free SQL** too, because the SQL runs as the
+schema owner; it is checked by `save-job` and not by the area, so `jobs: edit` alone saves the jobs without SQL. The
+value of a secret parameter is never returned: it is `********`, and a save that sends it back so keeps the stored
+one (`definition.mask_secrets`, `restore_secrets`).
 
 ## 7. UI
 

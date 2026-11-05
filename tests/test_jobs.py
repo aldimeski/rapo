@@ -585,5 +585,102 @@ class StoreTests(unittest.TestCase):
         store.metadata.create_all(db.engine)
 
 
+class SecretsTests(unittest.TestCase):
+    def definition(self, value='hunter2', secret=True, **extra):
+        return {'main': {'type': 'SQL', 'text': 'commit'},
+                'parameters': [{'name': 'pw', 'value': value,
+                                'secret': secret},
+                               {'name': 'user', 'value': 'ana'}], **extra}
+
+    def test_a_secret_value_is_hidden_from_the_browser(self):
+        masked = definition.mask_secrets(self.definition())
+        self.assertEqual(masked['parameters'][0]['value'], definition.MASK)
+        self.assertEqual(masked['parameters'][1]['value'], 'ana')
+        # The original is left as it was.
+        original = self.definition()
+        definition.mask_secrets(original)
+        self.assertEqual(original['parameters'][0]['value'], 'hunter2')
+
+    def test_an_empty_secret_and_a_plain_value_are_shown_as_they_are(self):
+        masked = definition.mask_secrets(self.definition(value=''))
+        self.assertEqual(masked['parameters'][0]['value'], '')
+        masked = definition.mask_secrets(self.definition(secret=False))
+        self.assertEqual(masked['parameters'][0]['value'], 'hunter2')
+
+    def test_a_hidden_value_sent_back_keeps_the_stored_secret(self):
+        sent = definition.mask_secrets(self.definition())
+        restored = definition.restore_secrets(sent, self.definition())
+        self.assertEqual(restored['parameters'][0]['value'], 'hunter2')
+        # A new value replaces it.
+        sent['parameters'][0]['value'] = 'new'
+        restored = definition.restore_secrets(sent, self.definition())
+        self.assertEqual(restored['parameters'][0]['value'], 'new')
+
+    def test_a_hidden_value_that_was_never_known_is_refused(self):
+        sent = definition.mask_secrets(self.definition())
+        for stored in (None, {}, self.definition(secret=False),
+                       {'parameters': [{'name': 'other', 'value': 'x',
+                                        'secret': True}]}):
+            with self.assertRaises(definition.DefinitionError):
+                definition.restore_secrets(sent, stored)
+
+    def test_a_secret_is_not_in_the_text_of_a_message_to_the_browser(self):
+        masked = definition.mask_secrets(self.definition())
+        self.assertNotIn('hunter2', json.dumps(masked))
+
+
+class UsesSqlTests(unittest.TestCase):
+    def check(self, **parts):
+        value = {'main': {'type': 'COMMAND', 'command': 'x'}}
+        value.update(parts)
+        return definition.uses_sql(value)
+
+    def test_sql_in_any_part_or_in_the_condition(self):
+        self.assertFalse(self.check())
+        self.assertTrue(self.check(main={'type': 'SQL', 'text': 'commit'}))
+        self.assertTrue(self.check(pre={'type': 'SQL', 'text': 'commit'}))
+        self.assertTrue(self.check(post={'type': 'SQL', 'text': 'commit'}))
+        self.assertTrue(self.check(condition={'kind': 'SQL',
+                                              'text': 'select 1'}))
+        self.assertFalse(self.check(condition={'kind': 'FILE_EXISTS',
+                                               'path': '/x'}))
+        self.assertFalse(self.check(pre=None, post=None, condition=None))
+
+
+class StoreHelperTests(unittest.TestCase):
+    def setUp(self):
+        db.engine.dispose()
+        store.metadata.drop_all(db.engine)
+        store.metadata.create_all(db.engine)
+
+    def test_schedule_json(self):
+        self.assertIsNone(store.schedule_json(None))
+        self.assertIsNone(store.schedule_json({}))
+        self.assertIsNone(store.schedule_json({'hour': None, 'min': ''}))
+        text = store.schedule_json({'hour': '3', 'min': '0', 'other': 'x'})
+        self.assertEqual(json.loads(text), {
+            'mday': None, 'wday': None, 'hour': '3', 'min': '0',
+            'sec': None})
+
+    def test_events_have_the_name_of_their_job_and_can_be_filtered(self):
+        one = store.save_job('one', job(), ctx=context())
+        two = store.save_job('two', job(), ctx=context())
+        store.add_event(one['job_id'], 'schedule', 'FIRED')
+        store.add_event(two['job_id'], 'manual', 'MISSED')
+        store.add_event(one['job_id'], 'schedule', 'MISSED')
+        events = store.read_events()
+        self.assertEqual([item['job_name'] for item in events],
+                         ['one', 'two', 'one'])
+        self.assertEqual(len(store.read_events(job_id=one['job_id'])), 2)
+        self.assertEqual(len(store.read_events(event_type='MISSED')), 2)
+        self.assertEqual(len(store.read_events(trigger_type='manual')), 1)
+        self.assertEqual(len(store.read_events(
+            since=dt.datetime.now() + dt.timedelta(hours=1))), 0)
+        self.assertEqual(len(store.read_events(limit=1)), 1)
+        store.delete_job('two')
+        names = [item['job_name'] for item in store.read_events()]
+        self.assertEqual(names, ['one', None, 'one'])
+
+
 if __name__ == '__main__':
     unittest.main()

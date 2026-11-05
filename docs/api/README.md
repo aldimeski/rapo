@@ -53,6 +53,7 @@ A scope is a level per area; a level includes the ones below it (`none` < `view`
 | `controls`    | view, edit                | `get-all-controls`, `get-schema-drift`, `get-control-versions`, datasource and view reads, `schedule-preview`, `get-next-fires` | | `save-control`, `delete-control`, schema update/recreate/check, orphan and output table drops, version deletes, `send-test-email`, `compile-view` |
 | `kpis`        | view, operate, edit       | KPI types, a control's KPIs, KPI history and runs, orphan list | `calculate-kpi`, `reingest-kpis`                           | `save-kpi-type`, `delete-kpi-type`, orphan KPI deletes/reassigns |
 | `scheduler`   | view, operate             | `scheduler-status`, `-upcoming`, `-events`, `get-missed-fires` | `scheduler-stop`, `scheduler-start`                        |                                                   |
+| `jobs`        | view, operate, edit       | `get-jobs`, `get-job`, `get-job-catalogue`, `get-job-runs`, `get-job-run`, `get-job-versions`, `job-scheduler-status`, `-upcoming`, `-events` | `run-job`, `cancel-job-run`, `set-job-status`, `job-scheduler-stop`, `job-scheduler-start` | `save-job`, `delete-job`, `save-job-schedule`, `check-job` |
 | `datasources` | view, edit                | PDI Core datasources, directories, incoming files, archive, grammars, viewer settings |                       | Their saves and deletes, lanes (`set-ds-active`), directories, grammars, viewer settings |
 | `files`       | view, operate             | The file log: `get-files-day`, `get-ds-file-log(-text)`, `search-files`, `get-pdi-state` | `set-file-status`, lane locks, `check-ds-upload`, `upload-ds-file`, `refresh-file-summary` | |
 | `instance`    | view, operate, edit       | `parameters`, health and sessions, `get-config-catalogue`, `get-config-changes`, `get-temp-tables` | `drop-temp-tables`                | `set-config-option`, `reload-config`              |
@@ -65,7 +66,8 @@ rule is `ROUTES` and `ALSO` in `rapo/web/api/scopes.py`. A route without a scope
 **Free SQL** is a flag apart from the areas, needed by every route that takes SQL text: `validate-sql`,
 `validate-kpi-sql`, `check-view`, `preview-view`, `compile-view`, `check-control-schema`, `save-control`,
 `save-kpi-type` and `calculate-kpi` with a draft statement. `controls: edit` and `kpis: edit` need it (their SQL runs
-as the schema owner). Without it, a raw `where` of `analysis-start(-file)` and `validate-analysis-where` may only be a
+as the schema owner). `save-job` needs it for a job with SQL in it (a SQL task or a SQL condition), which runs as the
+schema owner too; `jobs: edit` alone saves the jobs without SQL. Without it, a raw `where` of `analysis-start(-file)` and `validate-analysis-where` may only be a
 plain filter of the dataset's columns: no subquery, no `.`/`@`, no `;`, no comments or q-quoted literals, functions out of a short list (`to_char`,
 `substr`, `trunc`, `nvl`, `cast`, ...), as the discrepancy analysis' links write them.
 
@@ -1460,6 +1462,104 @@ queued_time, start_time, end_time, status, transferred, failed, message, runner,
 `run_id`: one run with its `run_log`, the lines the transfer logged. For a param with `LogDatabase:Y` they are read from
 `rapo_transfer_log`: `log_lines` is the number of lines the run logged and `log_trimmed` is true when fewer are left
 because only the newest `[TRANSFER] log_max_lines` lines of the param are kept.
+### Jobs
+
+The jobs of `rapo/jobs/` (RAJO, see [docs/jobs-design.md](../jobs-design.md)): a job is SQL, a transfer, a program or a
+script, with a part before it (`pre`), a condition, the work (`main`) and a part after it (`post`), started by a job
+scheduler of its own or by hand. While `[JOBS] enabled` is off every route below answers `404`; `GET /api/info` tells
+it as `jobs_available`. Reads need *Jobs: View*, starting and canceling a run and switching a job or the job scheduler
+*Jobs: Operate*, creating, changing and deleting a job *Jobs: Edit* (it runs programs as the user rapo runs as, so
+only the full token has it by default; a job with SQL also needs Free SQL). A failed request answers its `detail`
+with `400` (a bad name, value or parameter), `404` (no such job or run), `409` (the name is taken, the job is running
+or waiting, or the run belongs to another server), `422` (the definition does not validate) or `503` (the job tables
+are missing: run `migrations/v0.9.0/upgrade.sql`, or the job manager is not running).
+
+A job is `{job_id, job_name, description, job_type (of its main task), status ('Y' on, 'N' off), schedule_config (the
+JSON of a control schedule), notify_email, version, created_*, updated_*, definition}`. The `definition` is an object
+(see the design document): `pre`, `condition`, `main`, `post`, `parameters` (`{name, value, secret}`), `timeout` and
+`overlap`. **The value of a secret parameter is never sent**: it is `********`, and a save that sends it back so keeps
+the stored one (a hidden value of a parameter that has none is refused with `422`).
+
+#### `GET /api/get-jobs`
+Every job without its definition, each with `last_run`, `next_fire` (null when it is off or not scheduled) and
+`running` (a run waits or runs); `manager` - `{runner, active, enabled, capacity, queued, running}` of this server's job
+manager; `scheduler` - the state of the job scheduler.
+
+#### `GET /api/get-job`
+`name`: one job with its `definition`, `last_run`, `next_fire` and `running`.
+
+#### `GET /api/get-job-catalogue`
+What a job can be on this server: `platform` (`windows` or `linux`), `types` (every type of the OS, each `{type, kind,
+description, available, reason}`: not available when it is not in `[JOBS] enabled_types` or its interpreter was not
+found), `condition_kinds`, `overlaps`, `allowed_dirs`, `timeout` (the default), `max_output_kb`, `email_enabled`,
+`default_email` (whether `[JOBS] default_email` is set) and `variables` (the variables of every run).
+
+#### `POST /api/check-job`
+Body `{definition}` (an object or JSON text): checks a definition without saving or running it, as this server would
+at a run: the types of the OS and `enabled_types`, interpreters, script and program files (they must exist and be below
+`[JOBS] allowed_dirs`), SQL (only DML and PL/SQL), conditions, transfer arguments, parameters, `timeout` and `overlap`.
+Answers `{ok, problems, job_type, definition}`, `definition` being the one with its defaults filled in; a definition
+that does not read at all answers `ok` false with its problem.
+
+#### `POST /api/save-job`
+Body `{name, definition, description, notify_email, status, create}`: creates a job, or changes it (the name is not
+changed). `description`, `notify_email` (addresses separated by `,` or `;`) and `status` stay as they were when not
+given; `create` refuses an existing name (`409`). The definition is validated as `check-job` does, without the files
+having to exist yet. A change of the definition makes a new version. Answers the job.
+
+#### `DELETE /api/delete-job`
+`name`: deletes a job and its versions; its runs stay until `[JOBS] history_retention_days` ends. `409` while a run of
+it is running or waiting.
+
+#### `POST /api/set-job-status`
+`name`, `enabled`: switches a job on or off. An off job is not scheduled, a manual run is still possible. Not a new
+version.
+
+#### `POST /api/save-job-schedule`
+Body `{name, schedule}`: sets the schedule of a job, the units of a control schedule `{mday, wday, hour, min, sec}`
+(`*`, `N`, `/N`, `N-M`, `N,M`); no units: not scheduled. A new version. Answers the job.
+
+#### `POST /api/run-job`
+`name`; optional body `{parameters: {name: value}}` giving other values of the job's parameters for this run only (an
+unknown name is `400`). Initiates a run and queues it; answers `{run_id}`. A job that is running or waiting is refused
+(`409`) unless its `overlap` is `queue` (the run waits for the previous one) or `allow`.
+
+#### `POST /api/cancel-job-run`
+`run_id`: cancels a waiting or running run of this server, killing its process with everything it started; the run
+ends `C`. `409` for a run of another server, `404` for one that has finished.
+
+#### `GET /api/get-job-runs`
+`name` (all jobs when omitted), `limit` (100): the runs, latest first, without their log: `run_id`, `job_id`,
+`job_name`, `trigger_type` (`schedule`, `manual`), `scheduled_time`, `queued_time`, `start_time`, `end_time`, `status`
+(`I` waiting, `S` running, `D` done, `E` error, `C` canceled: the condition was not met, a start was skipped because
+the job was still running, or the run was canceled), `stage` (the last part started: `PRE`, `CONDITION`, `MAIN`,
+`POST`), `condition_value`, `exit_code` (of `main`), `message`, `runner`, `requested_by`, `definition_version`,
+`log_lines`, `mail_status` (what became of the failure e-mail of an error).
+
+#### `GET /api/get-job-run`
+`run_id`: one run with its log, `run_log` (one line per line of the program's stdout and stderr and of rapo, secret
+values replaced by `***`); `log_trimmed` tells that the oldest lines were deleted to keep the newest
+`[JOBS] log_max_lines` of the job.
+
+#### `GET /api/get-job-versions`
+`name`: the versions of a job, the newest first: `version`, `definition`, `schedule_config`, `updated_date`,
+`updated_by`.
+
+#### `GET /api/job-scheduler-status`
+The state of the job scheduler (`off`, `stopped`, `running`, `standby`, `starting`), the holder of its lease, the
+number of scheduled jobs, the last fire and the job `manager` of this server. It is independent of `scheduler-status`.
+
+#### `POST /api/job-scheduler-stop`, `POST /api/job-scheduler-start`
+Stop the job scheduler for every server, or start it again from now on (`409` when it is switched off for this server
+in `rapo.ini`). The scheduler of the controls is not touched.
+
+#### `GET /api/job-scheduler-upcoming`
+`hours` (24), `job_name`: the fires of the jobs that are on, `[{scheduled_time, job_name}]` in order.
+
+#### `GET /api/job-scheduler-events`
+`job_name`, `event_type` (`FIRED`, `STARTED`, `MISSED`, `FAILED`, `CANCELED`), `trigger_type`, `hours`, `limit` (500):
+what the job scheduler did, latest first, with `job_name`, `run_id`, `message` and `runner`.
+
 ### Service
 
 #### `GET /api/version`
@@ -1654,6 +1754,7 @@ Control runs write to the database, not to the server process, so a watcher comp
 | `runs:changed`      | `{resync, process_ids, control_names}`            |
 | `controls:changed`  | `{resync, control_ids}`                           |
 | `scheduler:changed` | `{event_ids}`                                     |
+| `jobs:changed`      | `{}`: a job, a run or the job scheduler changed (also sent to the one who changed it) |
 | `analysis:progress` | `{session_id, state}` - see Data analysis         |
 | `discrepancy:progress` | A discrepancy analysis job without its `report` - see `start-discrepancy-analysis` |
 | `health:level`     | `{level}`: the worst level of the instance health changed (`null`, `warn`, `crit`) |
@@ -1661,7 +1762,7 @@ Control runs write to the database, not to the server process, so a watcher comp
 | `datasources:changed` | `{kind}`: `config` when `pdi_core_ds_config` or `pdi_core_ds_tables` changed, by anyone; `status` when a count of the waiting files differs from the one before; `state` when a lane lock of `pdi_core_state` changed; `files` when today's file log got files or finished loads; `summary` when days of `rapo_file_summary` were summed (maintenance, `refresh-file-summary`) |
 
 A connection hears only the events of the areas its token may view (`runs:changed`: runs, controls, KPIs or
-Dashboard; `scheduler:changed`: scheduler, runs or Dashboard; `datasources:changed`: datasources, files or Dashboard;
+Dashboard; `scheduler:changed`: scheduler, runs or Dashboard; `jobs:changed`: jobs; `datasources:changed`: datasources, files or Dashboard;
 `discrepancy:progress`: data; `health:level` and `health:join`: instance or Dashboard), and `analysis:progress` only
 of its own token's sessions. Every 30 s the server closes the connections whose token was changed (they may
 reconnect with the new scopes) or is no longer valid (the reconnection is refused).

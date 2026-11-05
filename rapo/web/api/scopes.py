@@ -18,6 +18,7 @@ AREAS = {
     'controls': ('Controls', ('none', 'view', 'edit')),
     'kpis': ('KPIs', ('none', 'view', 'operate', 'edit')),
     'scheduler': ('Scheduler', ('none', 'view', 'operate')),
+    'jobs': ('Jobs', ('none', 'view', 'operate', 'edit')),
     'datasources': ('Datasources', ('none', 'view', 'edit')),
     'files': ('Files', ('none', 'view', 'operate')),
     'instance': ('Instance', ('none', 'view', 'operate', 'edit')),
@@ -52,6 +53,14 @@ DESCRIPTIONS = {
         'view': 'See the Scheduler page: running, upcoming and past fires',
         'operate': 'See the Scheduler page; stop and start the scheduler for '
                    'every server'},
+    'jobs': {
+        'view': 'See the jobs, their runs and logs, the upcoming fires and '
+                'the job scheduler',
+        'operate': 'See the jobs; run a job now, cancel a run, switch a job '
+                   'on or off, stop and start the job scheduler',
+        'edit': 'See and run the jobs; create, change and delete jobs, which '
+                'run programs and scripts as the user rapo runs as (a job '
+                'with SQL in it also needs Free SQL)'},
     'datasources': {
         'view': 'See the PDI Core datasources, their directories, waiting '
                 'files, archive and ASN.1 grammars',
@@ -80,12 +89,13 @@ NEEDS_FREE_SQL = {'controls': 'edit', 'kpis': 'edit'}
 PRESETS = {
     'viewer': {'scopes': {'dashboard': 'view', 'runs': 'view',
                           'controls': 'view', 'kpis': 'view',
-                          'scheduler': 'view', 'datasources': 'view',
-                          'files': 'view'},
+                          'scheduler': 'view', 'jobs': 'view',
+                          'datasources': 'view', 'files': 'view'},
                'free_sql': False},
     'operator': {'scopes': {'dashboard': 'view', 'runs': 'operate',
                             'data': 'view', 'controls': 'view',
                             'kpis': 'operate', 'scheduler': 'operate',
+                            'jobs': 'operate',
                             'datasources': 'view', 'files': 'operate',
                             'instance': 'view'},
                  'free_sql': False},
@@ -167,6 +177,15 @@ ROUTES = {
               'scheduler-status', 'scheduler-upcoming', 'scheduler-events',
               'get-missed-fires'),
     **_routes('scheduler', 'operate', 'scheduler-stop', 'scheduler-start'),
+    **_routes('jobs', 'view',
+              'get-jobs', 'get-job', 'get-job-catalogue', 'get-job-runs',
+              'get-job-run', 'get-job-versions', 'job-scheduler-status',
+              'job-scheduler-upcoming', 'job-scheduler-events'),
+    **_routes('jobs', 'operate',
+              'run-job', 'cancel-job-run', 'set-job-status',
+              'job-scheduler-stop', 'job-scheduler-start'),
+    **_routes('jobs', 'edit',
+              'save-job', 'delete-job', 'save-job-schedule', 'check-job'),
     **_routes('datasources', 'view',
               'get-ds-list', 'get-ds-status', 'get-ds-config',
               'check-ds-directories', 'count-ds-file-log', 'get-ds-files',

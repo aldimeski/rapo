@@ -15,6 +15,8 @@ from ..transfer import catalogue as transfer_catalogue
 from . import catalogue
 
 VERSION = 1
+# What the browser gets instead of the value of a secret parameter.
+MASK = '********'
 PARTS = ('pre', 'condition', 'main', 'post')
 KEYS = {'version', 'pre', 'condition', 'main', 'post', 'parameters',
         'timeout', 'overlap'}
@@ -221,6 +223,51 @@ def normalize(definition):
     if isinstance(condition, dict):
         _upper_type(condition, 'kind')
         _upper_type(condition.get('task'))
+    return definition
+
+
+def uses_sql(definition):
+    """Tell whether a normalized definition has SQL in it, a SQL task or a
+    SQL condition: SQL runs as the schema owner, so saving it needs Free
+    SQL."""
+    for part in ('pre', 'main', 'post'):
+        task = definition.get(part)
+        if isinstance(task, dict) and task.get('type') == 'SQL':
+            return True
+    condition = definition.get('condition')
+    return isinstance(condition, dict) and condition.get('kind') == 'SQL'
+
+
+def mask_secrets(definition):
+    """Get a copy of the definition for the browser: the value of every
+    secret parameter that has one is replaced by `MASK`."""
+    definition = copy.deepcopy(definition)
+    for item in definition.get('parameters') or []:
+        if isinstance(item, dict) and item.get('secret')                 and item.get('value'):
+            item['value'] = MASK
+    return definition
+
+
+def restore_secrets(definition, stored):
+    """Get the definition with the secret values the browser sent back as
+    `MASK` replaced by the stored ones. A masked value of a parameter that
+    has no stored secret is an error: it was never known."""
+    stored_values = {}
+    if stored:
+        for item in stored.get('parameters') or []:
+            if isinstance(item, dict) and item.get('secret'):
+                stored_values[item.get('name')] = item.get('value', '')
+    definition = copy.deepcopy(definition)
+    problems = []
+    for item in definition.get('parameters') or []:
+        if isinstance(item, dict) and item.get('value') == MASK:
+            if item.get('secret') and item.get('name') in stored_values:
+                item['value'] = stored_values[item['name']]
+            else:
+                problems.append(f'Parameter {item.get("name")}: the value '
+                                'is hidden, enter it again.')
+    if problems:
+        raise DefinitionError(problems)
     return definition
 
 

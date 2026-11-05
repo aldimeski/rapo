@@ -23,6 +23,7 @@ ROOMS = {
     'controls:changed': ('controls', 'runs', 'kpis', 'scheduler',
                          'dashboard'),
     'scheduler:changed': ('scheduler', 'runs', 'controls', 'dashboard'),
+    'jobs:changed': ('jobs',),
     'datasources:changed': ('datasources', 'files', 'dashboard'),
     'discrepancy:progress': ('data',),
     'health:level': ('instance', 'dashboard'),
@@ -57,6 +58,7 @@ class Watcher:
         self.wake = None
         self.states = {}
         self.scheduler_changed = False
+        self.jobs_changed = False
         self.datasources = None
         # The token and Caller of every connection, by sid.
         self.callers = {}
@@ -107,6 +109,7 @@ class Watcher:
         """Emit events for tables changed since the previous check."""
         await self.sweep()
         changed, self.scheduler_changed = self.scheduler_changed, False
+        jobs, self.jobs_changed = self.jobs_changed, False
         runs, controls, events = await asyncio.to_thread(self.read)
         for kind in await asyncio.to_thread(self.read_datasources):
             self.changed(kind)
@@ -119,6 +122,8 @@ class Watcher:
             self.changed('controls')
             await sio.emit('controls:changed', controls,
                            room=rooms('controls:changed'))
+        if jobs:
+            await sio.emit('jobs:changed', {}, room=rooms('jobs:changed'))
         if events or changed:
             self.changed('scheduler')
             await sio.emit('scheduler:changed',
@@ -292,6 +297,13 @@ def poke():
 def poke_scheduler():
     """Notify clients about a scheduler or run manager state change."""
     watcher.scheduler_changed = True
+    watcher.poke()
+
+
+def poke_jobs():
+    """Notify clients about a change of the jobs, their runs or the job
+    scheduler."""
+    watcher.jobs_changed = True
     watcher.poke()
 
 

@@ -8,6 +8,7 @@ missed fires) rows of `rapo_job_event`.
 """
 
 import datetime as dt
+import json
 import re
 
 import sqlalchemy as sa
@@ -189,6 +190,15 @@ def read_job(name):
     if row:
         row['definition'] = _text(row['definition'])
     return row
+
+
+def schedule_json(units):
+    """Get the stored JSON of schedule units ({mday, wday, hour, min, sec}),
+    None when none is set."""
+    if not units or not any(units.values()):
+        return None
+    return json.dumps({unit: units.get(unit)
+                       for unit in core_schedule.UNITS})
 
 
 def read_job_by_id(job_id):
@@ -525,12 +535,23 @@ def update_event(event_id, **values):
                                                    updated=now()))
 
 
-def read_events(limit=200, job_id=None):
-    """Get the events, latest first."""
-    statement = sa.select(event_table).order_by(
-        event_table.c.event_id.desc())
+def read_events(limit=200, job_id=None, event_type=None, trigger_type=None,
+                since=None):
+    """Get the events, latest first, with the name of their job (empty for
+    a job deleted since)."""
+    event = event_table
+    statement = sa.select(
+        event, job_table.c.job_name).select_from(event.outerjoin(
+            job_table, event.c.job_id == job_table.c.job_id)).order_by(
+        event.c.event_id.desc())
     if job_id is not None:
-        statement = statement.where(event_table.c.job_id == job_id)
+        statement = statement.where(event.c.job_id == job_id)
+    if event_type:
+        statement = statement.where(event.c.event_type == event_type)
+    if trigger_type:
+        statement = statement.where(event.c.trigger_type == trigger_type)
+    if since is not None:
+        statement = statement.where(event.c.event_time >= since)
     return _execute(statement.limit(limit), as_table=True)
 
 
