@@ -616,6 +616,7 @@ class Database:
         )
         scheduler_reboot = sa.exists(
             sa.select(scheduler.c.id, scheduler.c.start_date).where(
+                scheduler.c.id == 'RAPO.SCHEDULER',
                 checkpoint.c.added < scheduler.c.start_date
             )
         )

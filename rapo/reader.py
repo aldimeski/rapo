@@ -51,8 +51,14 @@ class Reader:
     Reader used to extract aplication data from database to user.
     """
 
-    def read_scheduler_record(self):
+    def read_scheduler_record(self, row_id='RAPO.SCHEDULER'):
         """Get scheduler record from DB table.
+
+        Parameters
+        ----------
+        row_id : str
+            The row of the scheduler: the one of the controls by default,
+            `RAPO.JOBS` is the one of the jobs.
 
         Returns
         -------
@@ -60,7 +66,7 @@ class Reader:
             Ordinary dictionary with web API information from DB table.
         """
         table = db.tables.scheduler
-        select = table.select()
+        select = table.select().where(table.c.id == row_id)
         record = db.execute(select, as_dict=True)
         return record
 

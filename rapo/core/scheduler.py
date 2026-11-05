@@ -22,6 +22,7 @@ from . import chain
 from . import journal
 from . import schedule
 from .control import Control, Parser
+from .lease import Lease, SCHEDULER_ROW, RENEWED, LOST
 from .runner import runner, get_runner_name
 from ..transfer.manager import manager as transfers
 
@@ -84,7 +85,9 @@ class Scheduler:
         self.username = getpass.getuser()
         self.pid = os.getpid()
 
-        self.leader = False
+        self.lease = Lease(SCHEDULER_ROW, self.instance_id,
+                           lambda: get_setting('lease_timeout'),
+                           standalone=True)
         self.leader_since = None
         self.active = False
         self.thread = None
@@ -100,8 +103,16 @@ class Scheduler:
         self.next_maintenance = None
         self.next_report = None
         self.last_fire = None
-        self.warned = False
         self.listeners = []
+
+    @property
+    def leader(self):
+        """Whether this server holds the scheduler lease."""
+        return self.lease.leader
+
+    @leader.setter
+    def leader(self, value):
+        self.lease.leader = value
 
     def start(self):
         """Start scheduler thread."""
@@ -144,12 +155,11 @@ class Scheduler:
 
     def status(self):
         """Get scheduler status report."""
-        record = reader.read_scheduler_record() or {}
+        record = self.lease.read() or {}
         disabled = record.get('disabled') == 'Y'
         timeout = get_setting('lease_timeout')
         heartbeat = record.get('heartbeat')
-        alive = (record.get('status') == 'Y' and heartbeat is not None
-                 and (dt.datetime.now()-heartbeat).total_seconds() < timeout)
+        alive = bool(record) and self.lease.alive(record)
         if not self.enabled:
             state = 'off'
         elif disabled:
@@ -217,72 +227,17 @@ class Scheduler:
     def _lease(self):
         """Acquire or renew the scheduler lease."""
         self.heartbeat = time.time()
-        now = dt.datetime.now()
-        table = db.tables.scheduler
-        if self.leader:
-            update = (table.update()
-                           .values(heartbeat=now)
-                           .where(table.c.instance_id == self.instance_id,
-                                  table.c.status == 'Y',
-                                  table.c.disabled == 'N'))
-            if db.execute(update).rowcount == 1:
-                return
+        result = self.lease.renew_or_acquire()
+        if result is None or result[0] == RENEWED:
+            return
+        if result[0] == LOST:
             logger.warning('Scheduler lease lost or scheduler stopped')
             self._release()
             return
-
-        record = reader.read_scheduler_record()
-        if not record or record['disabled'] == 'Y':
-            return
-        timeout = get_setting('lease_timeout')
-        if record['status'] == 'Y' and record['instance_id'] is None:
-            # Row left by a standalone rapo-scheduler of an older version.
-            pid = record['pid']
-            if record['server'] == self.server and pid and \
-                    not _pid_exists(int(pid)):
-                logger.info('Taking over stale standalone scheduler lease')
-            else:
-                if not self.warned:
-                    logger.warning('Standalone rapo-scheduler seems to be '
-                                   f'running at {record["server"]} PID '
-                                   f'{pid}, stop it to start this one')
-                self.warned = True
-                return
-        elif (record['status'] == 'Y'
-              and record['instance_id'] != self.instance_id
-              and record['heartbeat'] is not None
-              and (now-record['heartbeat']).total_seconds() < timeout
-              and not (record['server'] == self.server and record['pid']
-                       and not _pid_exists(int(record['pid'])))):
-            # Holder is alive, or on another host and its lease is fresh.
-            return
-
-        conditions = [table.c.disabled == 'N']
-        for column in ('instance_id', 'heartbeat', 'status'):
-            value = record[column]
-            column = table.c[column]
-            conditions.append(column.is_(None) if value is None
-                              else column == value)
-        update = (table.update()
-                       .values(server=self.server,
-                               username=self.username,
-                               pid=self.pid,
-                               instance_id=self.instance_id,
-                               heartbeat=now,
-                               start_date=now,
-                               stop_date=None,
-                               status='Y')
-                       .where(*conditions))
-        if db.execute(update).rowcount != 1:
-            return
-
-        self.leader = True
-        self.leader_since = now
+        since = result[1]
+        self.leader_since = dt.datetime.now()
         self.reload = True
-        self.cursor = now.replace(microsecond=0)
-        since = max([date for date in (record['heartbeat'],
-                                       record['stop_date'])
-                     if date is not None], default=None)
+        self.cursor = self.leader_since.replace(microsecond=0)
         self._record_missed(since, self.cursor)
         interval = get_setting('maintenance_interval')
         self.next_maintenance = _next_multiple(interval)
@@ -295,15 +250,7 @@ class Scheduler:
         if not self.leader:
             return
         self._resign()
-        table = db.tables.scheduler
-        now = dt.datetime.now()
-        update = (table.update()
-                       .values(stop_date=now, heartbeat=now, status='N')
-                       .where(table.c.instance_id == self.instance_id))
-        try:
-            db.execute(update)
-        except Exception:
-            logger.error()
+        self.lease.release()
         logger.info('Scheduler lease released')
 
     def _resign(self):
@@ -313,16 +260,7 @@ class Scheduler:
         self._notify()
 
     def _set_disabled(self, disabled):
-        table = db.tables.scheduler
-        values = {'disabled': 'Y' if disabled else 'N'}
-        if not disabled:
-            # Start from the UI resumes from now. Moving the marks the next
-            # holder measures downtime from keeps that true on whichever
-            # server takes the lease, not only on this one.
-            now = dt.datetime.now()
-            values.update(heartbeat=now, stop_date=now)
-        update = table.update().values(**values)
-        db.execute(update)
+        self.lease.set_disabled(disabled)
         logger.info(f'Scheduler {"stopped" if disabled else "started"} '
                     'from the UI')
 
@@ -687,16 +625,6 @@ def _next_multiple(interval):
         return None
     now = time.time()
     return (int(now)//interval+1)*interval
-
-
-def _pid_exists(pid):
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
 
 
 scheduler = Scheduler()
