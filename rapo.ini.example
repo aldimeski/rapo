@@ -281,6 +281,45 @@ history_days=7
 # today is read live. Days of the summary kept (at least 31):
 file_summary_days=90
 
+[JOBS]
+# Jobs: SQL, transfers, programs and scripts (SQL, TRANSFER, EXECUTABLE, COMMAND,
+# PYTHON, PERL; Linux also SHELL; Windows also BATCH, POWERSHELL), run by a job
+# scheduler of their own, independent of the one of the controls. A job runs
+# only on the server where rapo runs.
+# Show and run the jobs on this server. False: the Jobs page and its API are
+# off and nothing is scheduled or run. A change from the UI applies at once.
+enabled=True
+# Jobs executed at once on this server; more wait in a queue.
+parallelism=4
+# Seconds after which a running job is stopped (a job may set its own); 0: no limit.
+timeout=3600
+# Days the history of job runs is kept.
+history_retention_days=90
+# Log lines kept in the database per job, the oldest are deleted.
+log_max_lines=5000
+# Output (stdout and stderr) kept per run, in KB.
+max_output_kb=1024
+# Job types offered, comma separated; empty: every type of the OS.
+#enabled_types=SQL,TRANSFER,PYTHON,SHELL
+# Folders scripts and programs may be run from, comma separated. A script or
+# program file outside them is refused; empty: none is accepted. (A COMMAND
+# job is a command line and is not limited by it: leave COMMAND out of
+# enabled_types where that is not wanted.)
+#allowed_dirs=/opt/rapo/jobs
+# Address of the failure mail of a job that has none of its own (needs [EMAIL]).
+#default_email=ra-alerts@example.com
+# Interpreters; empty: found on PATH (Python: the one rapo runs in).
+#python_path=
+#perl_path=
+#shell_path=
+#powershell_path=
+# Same meaning as the options of [SCHEDULER], for the job scheduler.
+lease_timeout=60
+refresh_interval=300
+maintenance_interval=86400
+event_retention_days=90
+missed_window_hours=24
+
 [TRANSFER]
 # File transfers (ported from filetransfer-py). A transfer is a .param file in
 # param_dir, or the same text kept in the database (rapo_transfer_param).

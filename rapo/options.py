@@ -32,6 +32,7 @@ SECTIONS = collections.OrderedDict([
     ('DATASOURCES', 'PDI Core datasources and files pages'),
     ('HEALTH', 'Instance health: sampling, history and warning levels'),
     ('DASHBOARD', 'The Dashboard page: file log summary'),
+    ('JOBS', 'Jobs: SQL, programs and scripts run by their own scheduler'),
     ('TRANSFER', 'File transfers: param files, their schedule and crontab detection'),
 ])
 
@@ -302,6 +303,56 @@ for _rule, _warn, _crit, _text in HEALTH_LEVELS:
 _add('DASHBOARD', 'file_summary_days', 'int', 90,
      'Days of the file log summary kept (filled by the maintenance)',
      minimum=31)
+
+# [JOBS]
+_add('JOBS', 'enabled', 'bool', True,
+     'Show and run the jobs here (Jobs page, API, job scheduler, run '
+     'manager); off: nothing of them is visible or started')
+_add('JOBS', 'parallelism', 'int', 4,
+     'Jobs executed at once on this server; more wait in a queue', minimum=1)
+_add('JOBS', 'timeout', 'int', 3600,
+     'Seconds after which a running job is stopped, unless the job sets its '
+     'own; 0: no limit', minimum=0)
+_add('JOBS', 'history_retention_days', 'int', 90,
+     'Days the history of job runs is kept', minimum=1)
+_add('JOBS', 'log_max_lines', 'int', 5000,
+     'Log lines kept in the database per job, the oldest are deleted',
+     minimum=100)
+_add('JOBS', 'max_output_kb', 'int', 1024,
+     'Output (stdout and stderr) kept per run, in KB; the rest is cut',
+     minimum=1)
+_add('JOBS', 'enabled_types', 'text', None,
+     'Job types offered, comma separated, e.g. SQL,TRANSFER,PYTHON,SHELL; '
+     'empty: every type of the OS of this server')
+_add('JOBS', 'allowed_dirs', 'text', None,
+     'Folders scripts and programs may be run from, comma separated; empty: '
+     'no script or program file is accepted')
+_add('JOBS', 'default_email', 'text', None,
+     'Address of the failure mail of a job that has none of its own')
+_add('JOBS', 'python_path', 'path', None,
+     'Python interpreter of PYTHON jobs; empty: the one rapo runs in')
+_add('JOBS', 'perl_path', 'path', None,
+     'Perl interpreter of PERL jobs; empty: found on PATH')
+_add('JOBS', 'shell_path', 'path', None,
+     'Linux only: shell of SHELL jobs; empty: bash, else sh from PATH')
+_add('JOBS', 'powershell_path', 'path', None,
+     'Windows only: PowerShell of POWERSHELL jobs; empty: pwsh, else '
+     'powershell from PATH')
+_add('JOBS', 'lease_timeout', 'int', 60,
+     'Seconds without heartbeat before another server takes over the job '
+     'scheduler', minimum=20)
+_add('JOBS', 'refresh_interval', 'int', 300,
+     'Seconds between full reloads of the job schedules (changes apply '
+     'anyway)', minimum=5)
+_add('JOBS', 'maintenance_interval', 'int', 86400,
+     'Seconds between maintenance runs of the job scheduler (clean-up, '
+     'retention)', minimum=60)
+_add('JOBS', 'event_retention_days', 'int', 90,
+     'Days job scheduler events (fires, manual runs, missed fires) are kept',
+     minimum=1)
+_add('JOBS', 'missed_window_hours', 'int', 24,
+     'Hours back that job fires missed while no job scheduler ran are '
+     'recorded', minimum=0)
 
 # [TRANSFER]
 _add('TRANSFER', 'enabled', 'bool', False,
