@@ -95,7 +95,8 @@ event_table = sa.Table(
     sa.Column('updated', sa.DateTime),
     sa.Column('run_id', sa.Integer),
     sa.Column('message', sa.String(4000)),
-    sa.Column('runner', sa.String(255)))
+    sa.Column('runner', sa.String(255)),
+    sa.Column('workflow_id', sa.Integer))
 
 JOB_COLUMNS = [column for column in job_table.c if column.name != 'definition']
 
@@ -393,14 +394,15 @@ def read_versions(job_id):
 # The runs
 
 def add_run(job, trigger, scheduled_time=None, requested_by=None,
-            runner=None):
-    """Record an initiated run of the job (a row of read_job), get its
-    ID."""
+            runner=None, workflow_run_id=None):
+    """Record an initiated run of the job (a row of read_job), get its ID.
+    A run that is a step of a workflow run says which."""
     result = _execute(run_table.insert().values(
         job_id=job['job_id'], job_name=job['job_name'], trigger_type=trigger,
         scheduled_time=scheduled_time, queued_time=now(), status=INITIATED,
         runner=runner, requested_by=requested_by,
-        definition_version=job['version']))
+        definition_version=job['version'],
+        workflow_run_id=workflow_run_id))
     run_id = result.inserted_primary_key[0]
     if run_id is None:
         run_id = _execute(sa.select(sa.func.max(run_table.c.run_id)).where(
@@ -537,15 +539,16 @@ def clean_runs(days):
 # The events of the job scheduler
 
 def add_event(job_id, trigger_type, event_type, scheduled_time=None,
-              run_id=None, message=None, runner=None):
+              run_id=None, message=None, runner=None, workflow_id=None):
     """Record what the job scheduler did, get the ID of the event. An event
-    moves through types while a request is served (`update_event`)."""
+    moves through types while a request is served (`update_event`). It is
+    about a job, or about a workflow (`workflow_id`, no job)."""
     moment = now()
     result = _execute(event_table.insert().values(
         job_id=job_id, trigger_type=trigger_type, event_type=event_type,
         scheduled_time=scheduled_time, event_time=moment, updated=moment,
         run_id=run_id, message=(message or '')[:4000] or None,
-        runner=runner))
+        runner=runner, workflow_id=workflow_id))
     event_id = result.inserted_primary_key[0]
     if event_id is None:
         event_id = _execute(sa.select(sa.func.max(event_table.c.event_id)),

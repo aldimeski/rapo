@@ -307,3 +307,89 @@ every dispatch (a change applies at once); a TRANSFER task has routes of its own
 4. API and the `jobs` access area.
 5. UI: page, editor, history, status bar, menu.
 6. Docs, CHANGELOG, `v0.9.0`; second phase afterwards: workflows and dependencies.
+
+## 11. Workflows (0.10.0)
+
+Requirement: `documents/RAJO.txt`, second phase. A **workflow** is a named list of jobs run one after another: when a
+step ends, the next one starts, and the whole stops at the first step that does not succeed. Dependencies of a job on a
+control, a transfer or another job (a condition kind *Run status*) are the next release (0.11.0): a dependency that is not
+met cancels the run at once, without waiting, and inside a workflow that stops the workflow.
+
+### 11.1 What a workflow is
+
+| Part | |
+|---|---|
+| name, description | The name has the rules of a job name; it is not changed after it is created |
+| steps | An ordered list of jobs, by name. **At least one; the same job at most once** (the message names the job and its steps: "load-files is at steps 2 and 5"); every job must exist. No branching, no parallel steps |
+| parameters | `{name, value, secret}` as a job has them. In a step, a parameter of the workflow overrides the parameter of the job of the same name, for that run only; secrets are hidden in the logs and never sent to the browser |
+| schedule, on/off | As a job: the units of a control schedule, no cascade; an off workflow is not scheduled and can still be run by hand |
+| `notify_email` | The address of the failure mail; empty: `[JOBS] default_email` |
+| `timeout` | Seconds for the whole workflow (empty: `[JOBS] timeout`; 0: none); each step also keeps the timeout of its job |
+| `overlap` | As a job: `skip` (a manual start is refused, a scheduled one is recorded as canceled), `queue` (waits for the previous run of the workflow), `allow` |
+| versions | Every save of the definition or the schedule is a version, as for a job |
+
+The definition is one JSON document: `{"version": 1, "steps": [{"job": "a"}, {"job": "b"}], "parameters": [], "timeout":
+null, "overlap": "skip"}`. A step is an object so that it can get settings later.
+
+A job in a workflow stays a job: it keeps its own schedule and can be run by hand. A job that is switched off is still
+run as a step (only its own schedule is off). Deleting a job that is in workflows asks first and names them; on
+confirmation the job is removed from their steps (a new version of each), and a workflow left without steps is switched
+off and listed as having none.
+
+### 11.2 A run
+
+* A workflow run is recorded at once (`rapo_workflow_run`, status `I` queued, `S` running, `D` done, `E` error, `C`
+  canceled) with a row for every step (`rapo_workflow_run_step`), all waiting (`W`). It has a log of its own
+  (`rapo_workflow_log`) that tells which step starts, how each ends and, when it stops, where and why.
+* It is run by a thread of the server that started it, **not** by a slot: the workflow itself takes no slot. Each step is an
+  ordinary run of the job: it is queued in the job manager, waits for one of the `[JOBS] parallelism` slots, runs in a process
+  of its own, and is recorded in `rapo_job_run` with `trigger_type = 'workflow'` and `workflow_run_id`. The step runs
+  under the overlap `queue` whatever the job's own is: when the job is already running (by hand or by its schedule) the step
+  waits for it to end and then starts.
+* The **failure mail of the job is not sent** for a step; the workflow sends its own, once.
+* How a step ends decides the workflow:
+
+| The step run | The workflow | The later steps |
+|---|---|---|
+| `D` done | goes on with the next step; after the last it is `D` | |
+| `E` error (any part, timeout, dead process) | stops, `E` | `K` skipped |
+| `C` condition not met | stops, `C` (shown as a **warning**, amber); the log has a `WARNING` line: "Stopped at step 2 of 4 (job `x`): The condition was not met." | `K` skipped |
+| `C` canceled by the user or stopped | stops, `C`, the message says so | `K` skipped |
+
+* **Cancel** of a workflow run cancels the step that runs (it is killed with everything it started), skips the rest and ends
+  `C`. A workflow over its `timeout` does the same and ends `E`. A server that stops ends the runs it has as `E`
+  ("stopped because the server stopped unexpectedly") at the next start, and their step runs with them.
+* **Mail**: one e-mail for a workflow run that ends `E`, to `notify_email`, else `[JOBS] default_email`; it names the step
+  that failed, lists every step with its end, and has the last lines of the log. A workflow that stops as `C` (a condition
+  not met, a cancel) sends nothing, as for a job. `mail_status` of the run says what became of it.
+* **Parameters** given for a run by hand override the parameters of the workflow, which override those of the jobs. Only
+  names a job has are given to that job.
+
+### 11.3 Scheduling
+
+The job scheduler fires workflows as it fires jobs: the same lease, late-fire and missed-downtime handling, events in
+`rapo_job_event` (a new column `workflow_id`), maintenance that deletes old runs. Its upcoming list and status count them.
+
+### 11.4 Database (migration `v0.10.0`)
+
+`rapo_workflow` (as `rapo_job` with `steps` inside `definition`), `rapo_workflow_version`, `rapo_workflow_run`,
+`rapo_workflow_run_step`, `rapo_workflow_log`, and the column `workflow_id` of `rapo_job_event`.
+
+### 11.5 API, access, UI
+
+Routes in the area *Jobs* (View: reads; Operate: run, cancel, switch on and off; Edit: save, delete): `get-workflows`,
+`get-workflow`, `check-workflow`, `save-workflow`, `delete-workflow`, `set-workflow-status`, `save-workflow-schedule`,
+`run-workflow`, `cancel-workflow-run`, `get-workflow-runs`, `get-workflow-run` (with its steps and its log),
+`get-workflow-versions`; `delete-job` answers `409` with `used_by` (the workflows) until it is sent with `confirm`. The
+Jobs page gets a second tab, **Workflows**: the list with the last run and the step it stopped at, the run history with a
+run's steps (each with its status, its duration and a link to the run of the job and its log) and the log of the workflow,
+and an editor with the tabs General (name, description, address, on/off, timeout, overlap, parameters), Steps (the jobs in
+order; a note on a job that is off), Schedule and Versions.
+
+### 11.6 Order of the work
+
+1. This design, the migration `v0.10.0`, the definition and the storage, with tests.
+2. The orchestrator, the changes of the job manager (a step does not mail, waits for its job), the scheduler.
+3. API and access.
+4. UI.
+5. Docs, CHANGELOG, `v0.10.0`.
