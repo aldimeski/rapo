@@ -89,7 +89,7 @@ If you are a young RA Team or looking for some alternatives, try Rapo because:
 * **File transfers**. The logic of [filetransfer-py](https://github.com/aldimeski/filetransfer-py) runs inside rapo:
   files are copied or moved from a local directory or an SFTP server to one or more target directories. A param is a
   `.param` file or a row of the database, is scheduled by rapo or found in the crontab (Linux), and the *Transfers*
-  page lists them all with their next start ([guide](docs/transfer.md)).
+  tab of the Jobs page lists them all with their next start ([guide](docs/transfer.md)).
 * **Logs you can read**. One file per control run under `controls/<control_id>/<process_id>.log`, everything else
   in `rapo-server_YYYYMMDD.log`, both cleaned up on a retention of their own and both reachable from the UI.
 * **A documented web API** ([reference](docs/api/README.md)) for reports, dashboards and scripts outside this

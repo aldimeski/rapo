@@ -210,6 +210,11 @@ router.beforeEach(function (to, from, next) {
   const envInfo = store.state.envInfo;
   const pageOff = (name) => (name === "transfers" && envInfo && envInfo.transfers_available === false) || (name === "jobs" && envInfo && envInfo.jobs_available === false);
   const transfersOff = pageOff(to.name);
+  // The transfers are a tab of the Jobs page: the old address opens it, when the token may open Jobs.
+  if (to.name === "transfers" && !transfersOff && !pageOff("jobs") && routeAllowed(whoami, router.resolve({ name: "jobs" }))) {
+    next({ name: "jobs", query: { tab: "transfers" }, replace: true });
+    return;
+  }
   if (to.name === "token" || (!transfersOff && routeAllowed(whoami, to))) {
     next();
     return;

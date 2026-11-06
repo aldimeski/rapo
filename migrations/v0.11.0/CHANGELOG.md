@@ -23,6 +23,10 @@ are in the [migration instructions](README.md).
    what a job or workflow **waits for**.
 1. **UI.** The condition editor is shared by jobs and workflows (a *Condition* tab is new in the workflow editor), with a
    picker of the names of controls, transfers, jobs and workflows.
+1. **Transfers are a tab of the Jobs page**, next to *Jobs* and *Workflows* (`/jobs?tab=transfers`), for a simpler overview
+   of everything that runs. It is shown when `[TRANSFER] enabled` is on and the token may see the transfers; the old address
+   `/transfers` opens it, and the menu item is gone. A token that may not open the *Jobs* page keeps the page `/transfers`
+   and its menu item. Only the UI moved: the API, the access rights and the options are the same.
 1. **API.** `get-dependency-targets` (area *Jobs*, View); `check-job` and `check-workflow` take `name` and answer `missing`;
    `get-jobs` and `get-workflows` add `waits_for` and `unmet` (`get-job` and `get-workflow` add `unmet`); `hide_unmet` on
    `get-job-runs` and `get-workflow-runs` ([docs/api](../../docs/api/README.md#dependencies)).

@@ -11,7 +11,8 @@ Transfers are **off by default**: a new installation shows nothing of them. Set 
 section of `rapo.ini` (or change it on the Configuration tab of Instance details, which applies at once and starts or
 stops the transfer manager; switching off cancels the transfers that wait or run) to switch them on. While `enabled` is off:
 
-* the *Transfers* menu item and page are not shown (the page redirects to the first page the token may open),
+* the *Transfers* tab of the *Jobs* page and the page `/transfers` are not shown (the page redirects to the first page
+  the token may open),
 * every transfer API route (`get-transfers`, `run-transfer`, ... ) answers `404` with a note to switch them on,
 * the transfer manager does not start, so nothing is queued or run, and the scheduler does not fire transfers
   scheduled earlier or clean their history,
@@ -20,8 +21,10 @@ stops the transfer manager; switching off cancels the transfers that wait or run
 The params, schedules and runs in the database and the `.param` files stay as they are; they are used again once
 `enabled` is on. An existing installation that upgrades must add `enabled=True` to keep its transfers.
 
-The *Transfers* page of the UI (`/transfers`) lists every param in one place, whether it is a file or kept in the
-database, how it is started and when it starts next.
+The *Transfers* tab of the *Jobs* page (next to *Jobs* and *Workflows*; the old address `/transfers` opens it) lists
+every param in one place, whether it is a file or kept in the database, how it is started and when it starts next. A token
+that may open the transfers but not the *Jobs* page, and a server with the jobs switched off, keep the page `/transfers`
+with the same list and a *Transfers* item in the menu.
 
 ## Where a param is kept
 

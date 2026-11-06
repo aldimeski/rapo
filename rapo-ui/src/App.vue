@@ -506,7 +506,9 @@ export default {
         links.push({ icon: "fas fa-cogs", text: "Jobs", route: "/jobs", routes: ["jobs"] });
       }
       // Shown only when the server has them switched on ([TRANSFER] enabled of rapo.ini).
-      if (this.getEnvInfo && this.getEnvInfo.transfers_available) {
+      // A token that may not open the Jobs page keeps the link; for the others the transfers are a tab of Jobs.
+      const jobsPage = this.getEnvInfo && this.getEnvInfo.jobs_available && routeAllowed(this.whoami, this.$router.resolve("/jobs"));
+      if (this.getEnvInfo && this.getEnvInfo.transfers_available && !jobsPage) {
         links.push({ icon: "fas fa-exchange-alt", text: "Transfers", route: "/transfers", routes: ["transfers"] });
       }
       // PDI Core datasources, where their tables are readable; spaced from the lists of rapo's own objects.

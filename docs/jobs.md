@@ -171,12 +171,12 @@ off, or when jobs have no address for it.
 A `TRANSFER` task runs a transfer param, kept as a file in `[TRANSFER] param_dir` or in the database, and may give
 **arguments**: `Name:value` lines that replace or add parameters of the param **for this job only**, e.g.
 `FileMask:<YYYYMMDD-1d>\.csv`. The param itself is not changed. A job runs a transfer **whether or not** the *Transfers*
-page is switched on (`[TRANSFER] enabled`).
+tab is switched on (`[TRANSFER] enabled`).
 
 In the editor, **New param...** makes a param for the job in the database (named after the job), and **Edit param...**
 changes a param kept there; a param kept in a file is only read. Changing a param says which other jobs run it. A param made
-this way is listed on the *Transfers* page when it is on, without a schedule of its own: the job is what is scheduled. A
-param that is also scheduled on the *Transfers* page would run twice, so use one of the two.
+this way is listed on the *Transfers* tab when it is on, without a schedule of its own: the job is what is scheduled. A
+param that is also scheduled on the *Transfers* tab would run twice, so use one of the two.
 
 ## Workflows
 

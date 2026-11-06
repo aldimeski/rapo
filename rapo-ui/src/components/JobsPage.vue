@@ -20,9 +20,11 @@
       <q-tabs v-model="tab" dense align="left" class="text-blue-grey-8" active-color="teal" indicator-color="teal" no-caps inline-label>
         <q-tab name="jobs" :label="`Jobs${data ? ' (' + data.jobs.length + ')' : ''}`" icon="fas fa-cog" />
         <q-tab name="workflows" :label="`Workflows${workflows ? ' (' + workflows.length + ')' : ''}`" icon="fas fa-stream" />
+        <q-tab v-if="transfersTab" name="transfers" label="Transfers" icon="fas fa-exchange-alt" />
       </q-tabs>
       <q-separator />
       <workflows-panel v-if="tab === 'workflows'" :workflows="workflows" :error="workflowError" @reload="load()" />
+      <transfers-panel v-else-if="tab === 'transfers'" />
       <template v-else>
       <div class="row items-center q-pa-sm q-gutter-sm">
         <q-input v-model="search" dense outlined clearable debounce="200" placeholder="Search job or description" class="col-4">
@@ -162,6 +164,7 @@ import JobRunsDialog from "./JobRunsDialog.vue";
 import JobSchedulerBar from "./JobSchedulerBar.vue";
 import LoadErrorNotice from "./LoadErrorNotice.vue";
 import SkeletonRows from "./SkeletonRows.vue";
+import TransfersPanel from "./TransfersPanel.vue";
 import WorkflowsPanel from "./WorkflowsPanel.vue";
 import { api, notifyError } from "../api";
 import { JOB_STAGES, jobType, runStatus } from "../constants";
@@ -175,11 +178,11 @@ import { targetText } from "../utils/job";
 const REFRESH_SECONDS = 10;
 
 export default {
-  components: { DateTimeText, JobRunDialog, JobRunsDialog, JobSchedulerBar, LoadErrorNotice, SkeletonRows, WorkflowsPanel },
+  components: { DateTimeText, JobRunDialog, JobRunsDialog, JobSchedulerBar, LoadErrorNotice, SkeletonRows, TransfersPanel, WorkflowsPanel },
   data() {
     return {
       // The tab is in the address (?tab=workflows), so a link and a reload keep it.
-      tab: this.$route.query.tab === "workflows" ? "workflows" : "jobs",
+      tab: ["workflows", "transfers"].includes(this.$route.query.tab) ? this.$route.query.tab : "jobs",
       data: null,
       // get-workflows, or null while they load; and why they could not be read (the tables of v0.10.0 may be missing).
       workflows: null,
@@ -200,6 +203,11 @@ export default {
   },
   computed: {
     ...mapState({ status: "jobSchedulerStatus" }),
+    // The transfers are a tab when the server has them switched on ([TRANSFER] enabled) and the token may see them.
+    transfersTab() {
+      const info = this.$store.getters.getEnvInfo;
+      return Boolean(info && info.transfers_available && this.$can("datasources", "view"));
+    },
     allRows() {
       return this.data ? this.data.jobs : [];
     },
@@ -247,7 +255,7 @@ export default {
   },
   watch: {
     tab(value) {
-      this.$router.replace({ name: "jobs", query: value === "workflows" ? { tab: "workflows" } : {} });
+      this.$router.replace({ name: "jobs", query: value === "jobs" ? {} : { tab: value } });
     },
   },
   methods: {
@@ -377,6 +385,10 @@ export default {
     },
   },
   mounted() {
+    // An address with ?tab=transfers while the transfers are off, or the token may not see them: the jobs.
+    if (this.tab === "transfers" && !this.transfersTab) {
+      this.tab = "jobs";
+    }
     this.load();
     this.refreshStatus();
     api("get-job-catalogue", { loadingBar: false })
