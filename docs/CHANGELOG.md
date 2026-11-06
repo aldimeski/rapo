@@ -6,6 +6,20 @@ The full notes and upgrade steps of each release are in `migrations/<version>/` 
 
 ---
 
+## v0.10.0 — 2026-11-06
+
+New tables `rapo_workflow`, `rapo_workflow_version`, `rapo_workflow_run`, `rapo_workflow_run_step`, `rapo_workflow_log` and a column
+`workflow_id` of `rapo_job_event` (`migrations/v0.10.0/upgrade.sql`); no new option. Run it before the new version starts
+(`migrations/v0.10.0/README.md`).
+
+- **Workflows**: a named list of jobs run one after another; the workflow stops at the first step that does not succeed ([docs/jobs.md](jobs.md#workflows)).
+- **How a run ends**: an error stops it as an error (the later steps are skipped, one failure mail for the workflow, to its address or `[JOBS] default_email`, the mail of the job is not used); a condition that is not met or a cancel stops it as canceled, shown as a **warning**, with where and why in the log and no mail.
+- **Steps are ordinary job runs** (a slot each; the workflow takes none), waiting for a run of the job that is still going; parameters of the workflow override those of the jobs; its own timeout, overlap, schedule and versions; a job is in a workflow once.
+- **Jobs page**: a *Workflows* tab with the list, run history with the steps and their logs, and an editor (General, Steps, Schedule, Versions, *Check*); a job says which workflows it is in, and **deleting a job that is in workflows asks first** and takes it out of them (a workflow left without steps is switched off).
+- **API**: `get-workflows`, `get-workflow`, `check-workflow`, `save-workflow`, `delete-workflow`, `set-workflow-status`, `save-workflow-schedule`, `run-workflow`, `cancel-workflow-run`, `get-workflow-runs`, `get-workflow-run`, `get-workflow-versions` in the area *Jobs*; `delete-job` takes `confirm`; `get-jobs` and `get-job` list the `workflows` of a job; `job-scheduler-upcoming` and `-events` include the workflows ([docs/api](api/README.md#workflows)).
+
+---
+
 ## v0.9.0 — 2026-11-05
 
 New tables `rapo_job`, `rapo_job_version`, `rapo_job_run`, `rapo_job_log`, `rapo_job_event` and a row `RAPO.JOBS` of

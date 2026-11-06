@@ -386,7 +386,19 @@ run's steps (each with its status, its duration and a link to the run of the job
 and an editor with the tabs General (name, description, address, on/off, timeout, overlap, parameters), Steps (the jobs in
 order; a note on a job that is off), Schedule and Versions.
 
-### 11.6 Order of the work
+### 11.6 Built (0.10.0)
+
+Where the built version is more exact than the text above: the failure mail of a workflow has the last lines of the log of the
+failed step as well as of the workflow; a start that has to wait for the previous run (`overlap: queue`) says so in the log;
+`delete-job` is refused (`409`) until `confirm`, and `get-jobs` and `get-job` list the workflows of a job (`workflows`);
+`job-scheduler-upcoming` lists the fires of the jobs and of the workflows (`kind`); the events have `workflow_id` and
+`workflow_name`. The status of a step of a run is `W`, `I`, `S`, `D`, `E`, `C` or `K` (skipped), and the UI shows a workflow
+run that ended `C` with a message "Stopped at step ..." as a warning. A run that waits for the previous one (`queue`) is
+recorded and shown as waiting (`I`). The code: `rapo/jobs/workflow.py` (definition), `workflow_store.py`, `workflow_manager.py`
+(the orchestrator), `notify.py` (the mail), `scheduler.py`, the routes in `rapo/web/api/app.py`, and in the UI the tab
+`WorkflowsPanel.vue`, `WorkflowRunsDialog.vue` and `WorkflowEdit.vue`.
+
+### 11.7 Order of the work
 
 1. This design, the migration `v0.10.0`, the definition and the storage, with tests.
 2. The orchestrator, the changes of the job manager (a step does not mail, waits for its job), the scheduler.

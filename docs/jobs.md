@@ -18,13 +18,14 @@ The design and the reasons behind the choices are in [jobs-design.md](jobs-desig
 1. [Scheduling and running](#scheduling-and-running)
 1. [Logs and the failure mail](#logs-and-the-failure-mail)
 1. [Transfers in jobs](#transfers-in-jobs)
+1. [Workflows](#workflows)
 1. [Safety](#safety)
 1. [rapo.ini `[JOBS]`](#rapoini-jobs)
 1. [When a job does not run](#when-a-job-does-not-run)
 
 ## Switching the jobs on, and who may use them
 
-The jobs are **on by default** (`[JOBS] enabled=True`); with no job defined nothing runs. Set `enabled=False`, in `rapo.ini`
+The jobs and the workflows are **on by default** (`[JOBS] enabled=True`); with no job defined nothing runs. Set `enabled=False`, in `rapo.ini`
 or on the *Configuration* tab of *Instance details* (it applies at once), to switch them off: the *Jobs* page and its
 routes are not offered, and the job manager and the job scheduler stop. Jobs and their history stay in the database.
 
@@ -32,9 +33,9 @@ Access is the area **Jobs**, in three levels:
 
 | Level   | Allows                                                                                                   |
 |---------|----------------------------------------------------------------------------------------------------------|
-| View    | See the jobs, their runs and logs, the upcoming fires and the job scheduler                              |
-| Operate | Also run a job now, cancel a run, switch a job on or off, stop and start the job scheduler               |
-| Edit    | Also create, change and delete jobs, and make transfer params for them                                   |
+| View    | See the jobs and workflows, their runs and logs, the upcoming fires and the job scheduler                |
+| Operate | Also run a job or workflow now, cancel a run, switch one on or off, stop and start the job scheduler     |
+| Edit    | Also create, change and delete jobs and workflows, and make transfer params for them                     |
 
 A job runs programs as the user rapo runs as, so **Edit** is only in the *Full* token preset: *Viewer* gets View,
 *Operator* gets Operate and *Editor* gets nothing. A job with SQL in it also needs **Free SQL**, because the SQL runs as
@@ -175,6 +176,53 @@ changes a param kept there; a param kept in a file is only read. Changing a para
 this way is listed on the *Transfers* page when it is on, without a schedule of its own: the job is what is scheduled. A
 param that is also scheduled on the *Transfers* page would run twice, so use one of the two.
 
+## Workflows
+
+A **workflow** is a named list of jobs run **one after another**: when a step ends, the next one starts. It has its own tab
+on the *Jobs* page (*Workflows*), its own editor, and its own schedule, run history and failure mail. There is no
+branching and there are no parallel steps.
+
+| Part            | What it is                                                                                                  |
+|-----------------|-------------------------------------------------------------------------------------------------------------|
+| **Steps**       | The jobs, in order. At least one. **A job can be in a workflow once**: the editor does not offer it again, and a save names a job that is repeated and the steps it is at ("load is repeated, at steps 2 and 5") |
+| **Parameters**  | As a job has them. In a step, a parameter of the workflow **overrides** the parameter of the same name of the job, for that run only; a job that has no such parameter is not given it. Secrets are hidden in the logs of the steps too |
+| **Schedule, on/off** | As a job: a schedule of the job scheduler, no cascade. An off workflow is not scheduled and can still be run by hand |
+| **E-mail**      | One address for the whole workflow; empty: `[JOBS] default_email`                                           |
+| **Timeout**     | Seconds for the **whole** workflow (empty: `[JOBS] timeout`; `0`: none). Each step also keeps the timeout of its job |
+| **Overlap**     | As a job: *Skip* (a manual start is refused, a scheduled one is recorded as canceled), *Queue* (waits for the previous run of the workflow) or *Allow* |
+| **Versions**    | Every save of the definition or the schedule is a version, as for a job                                      |
+
+**How a run goes.** The workflow takes no slot of `[JOBS] parallelism`; each step is an **ordinary run of its job**: it is
+queued for a slot, runs in a process of its own, has its own log, and is listed with the runs of the job (as *Workflow*,
+with the run of the workflow it belongs to). If the job is already running (by hand, by its own schedule, or as a step of
+another workflow) the step **waits for it to end** and then starts, whatever the overlap of the job. A job that is switched
+off still runs as a step: only its own schedule is off.
+
+| A step ends as                         | The workflow                                                                                          |
+|----------------------------------------|-------------------------------------------------------------------------------------------------------|
+| Done                                   | Goes on with the next step; after the last it is **Done**                                              |
+| Error (any part, a timeout, a dead process) | **Stops as an error**; the later steps are *Skipped*; one failure mail is sent                    |
+| Canceled because its **condition was not met** | **Stops as canceled**, shown as a **warning** (*Stopped*, amber): the message and the log say where and why ("Stopped at step 2 of 4 (job `load-files`): The condition was not met."); the later steps are *Skipped*; no mail |
+| Canceled by someone                    | Stops as canceled, as a warning; no mail                                                               |
+
+**Cancel** of a workflow run cancels the step that runs (it is killed with everything it started), skips the rest, and
+ends as canceled. A workflow over its timeout does the same and ends as an error.
+
+**The failure mail.** A workflow that ends as an **error** sends **one** e-mail, to its address, or else to
+`[JOBS] default_email`. It names the step that failed, lists every step with how it ended, and has the last lines of the
+log of the failed step and of the workflow. The **mail of a job is not used** while it runs as a step of a workflow, and the
+run of the job says so. A workflow that stops as canceled (a warning) sends nothing. As for a job, *what became of the mail*
+is shown with the run, and the mail needs `[EMAIL] enabled=True`.
+
+**The history** of a workflow run lists its steps with their status, duration and message; click a step to read the log of
+its run of the job. The log of the workflow itself tells which step starts, how each ends, and where and why it stopped; a
+warning is amber, an error red.
+
+**Deleting a job that is in workflows** says which ones and asks for confirmation. The job is then taken out of their steps
+(a new version of each), and a workflow left **without steps** is switched off and listed as having none; it can not be run
+until a job is added. A job is told in its editor (and in the list) which workflows it is a step of. A job keeps its own
+schedule and can still be run by hand.
+
 ## Safety
 
 A job runs programs as the user rapo runs as, and SQL as the schema owner. What limits it:
@@ -222,7 +270,8 @@ See `rapo.ini.example`; the options can be changed on the *Configuration* tab of
 
 ## Not yet
 
-Chaining jobs into **workflows** (when A ends B starts, the whole stops at the first failure) and **dependencies** on
-controls and transfers are the next step. The jobs that start outside rapo (the crontab, the Windows Task Scheduler) are
-not listed, as the transfers started by the crontab are. The `SHELL` type and the paths for a Linux server are written but
-have so far been run on Windows only.
+**Dependencies** of a job on a control, a transfer or another job (a condition *Run status*) are the next release (the
+run is canceled at once when the dependency is not met, and inside a workflow that stops the workflow). A workflow has no
+branching, no parallel steps, and no step that goes on after a failure. The jobs that start outside rapo (the crontab, the
+Windows Task Scheduler) are not listed, as the transfers started by the crontab are. The `SHELL` type and the paths for a
+Linux server are written but have so far been run on Windows only.
