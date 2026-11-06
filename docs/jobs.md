@@ -19,6 +19,7 @@ The design and the reasons behind the choices are in [jobs-design.md](jobs-desig
 1. [Logs and the failure mail](#logs-and-the-failure-mail)
 1. [Transfers in jobs](#transfers-in-jobs)
 1. [Workflows](#workflows)
+1. [Dependencies](#dependencies)
 1. [Safety](#safety)
 1. [rapo.ini `[JOBS]`](#rapoini-jobs)
 1. [When a job does not run](#when-a-job-does-not-run)
@@ -108,6 +109,7 @@ output comes line by line; PowerShell with `-NoProfile -NonInteractive -Executio
 | Exit code           | A program, command or script exits with `0`                                                        |
 | File exists         | A file or folder exists (or, for *it does not exist*, does not). Date tokens like `<YYYYMMDD>` are filled in |
 | Files in a folder   | The number of files of a folder that match a mask (a regular expression) is within `min` and `max`. A missing folder is an error |
+| Run status          | Other runs (controls, transfers, jobs, workflows) have ended well: see [Dependencies](#dependencies)  |
 
 A condition that is not met ends the run as *Canceled* with the message *The condition was not met*, and the value it got
 is kept with the run.
@@ -223,6 +225,36 @@ warning is amber, an error red.
 until a job is added. A job is told in its editor (and in the list) which workflows it is a step of. A job keeps its own
 schedule and can still be run by hand.
 
+## Dependencies
+
+The condition **Run status** makes a job (or the start of a workflow) wait for **other runs**: a *control*, a *transfer*,
+a *job* or a *workflow*. It has one or more **targets**, each with a **window**, and is met when **every** target is.
+
+| Window                | The target is fine when                                                                             |
+|-----------------------|------------------------------------------------------------------------------------------------------|
+| Ended today           | its last run that ended, ended today                                                                 |
+| Ended in the last N hours | it ended within N hours (1 to 720), counted from the **end** of the run                           |
+| Ended since the last successful run | it ended after the last successful run of this job or workflow (or, when there is none, after it was made) |
+| Has the data of a day | **controls only**: the last run for the day of its data (`date_from`) `N` days back (0 to 31; 0 is today) |
+
+For a target the **last run that ended counts, and it must be Done**: an earlier good run does not make up for a later
+failed one. A target that is **running (or waiting) now is not fine**. A control is *Done* in status `D`; a transfer, a job
+or a workflow in status `D` as well. A transfer is read whether or not `[TRANSFER] enabled` is on.
+
+A job whose condition is not met ends as *Canceled*, with the reason in the message: "The condition was not met: the control
+DEMO_BILLING has not ended today (last at 2026-10-30 22:52); the job prep is running". A **workflow** may have a condition
+too (the *Condition* tab), checked once **before its first step**: it may be Run status, File exists or Files in a folder.
+When it is not met no step runs and the run ends as canceled, shown as a **warning** (*Stopped at the start of the
+workflow: ...*), without a mail.
+
+* **A target that does not exist is an error**, not "not met" (the failure mail is sent). *Check* in the editor tells it
+  before; saving is not refused, as a control may be made later. A job and a workflow can not wait for themselves.
+* **The lists show the last real run.** A job that polls (scheduled every few minutes, waiting for a control) would end
+  almost every run canceled; the list shows the last run that really ran, with a note *condition not met at 07:10 (12 times
+  since)*, and the *Runs* dialog can **hide** such runs. They are recorded all the same, and kept as long as other runs.
+* The list says what a job or workflow **waits for** (hover for the windows).
+* No new access right: the *Jobs* area covers it. The names to pick from are read with `get-dependency-targets` (View).
+
 ## Safety
 
 A job runs programs as the user rapo runs as, and SQL as the schema owner. What limits it:
@@ -270,8 +302,6 @@ See `rapo.ini.example`; the options can be changed on the *Configuration* tab of
 
 ## Not yet
 
-**Dependencies** of a job on a control, a transfer or another job (a condition *Run status*) are the next release (the
-run is canceled at once when the dependency is not met, and inside a workflow that stops the workflow). A workflow has no
-branching, no parallel steps, and no step that goes on after a failure. The jobs that start outside rapo (the crontab, the
+A workflow has no branching, no parallel steps, and no step that goes on after a failure. The jobs that start outside rapo (the crontab, the
 Windows Task Scheduler) are not listed, as the transfers started by the crontab are. The `SHELL` type and the paths for a
 Linux server are written but have so far been run on Windows only.

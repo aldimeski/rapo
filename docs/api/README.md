@@ -53,7 +53,7 @@ A scope is a level per area; a level includes the ones below it (`none` < `view`
 | `controls`    | view, edit                | `get-all-controls`, `get-schema-drift`, `get-control-versions`, datasource and view reads, `schedule-preview`, `get-next-fires` | | `save-control`, `delete-control`, schema update/recreate/check, orphan and output table drops, version deletes, `send-test-email`, `compile-view` |
 | `kpis`        | view, operate, edit       | KPI types, a control's KPIs, KPI history and runs, orphan list | `calculate-kpi`, `reingest-kpis`                           | `save-kpi-type`, `delete-kpi-type`, orphan KPI deletes/reassigns |
 | `scheduler`   | view, operate             | `scheduler-status`, `-upcoming`, `-events`, `get-missed-fires` | `scheduler-stop`, `scheduler-start`                        |                                                   |
-| `jobs`        | view, operate, edit       | `get-jobs`, `get-job`, `get-job-catalogue`, `get-job-runs`, `get-job-run`, `get-job-versions`, `job-scheduler-status`, `-upcoming`, `-events`, `get-job-transfer-params`, `-catalogue`, `get-job-transfer`, `get-workflows`, `get-workflow`, `get-workflow-runs`, `get-workflow-run`, `get-workflow-versions` | `run-job`, `cancel-job-run`, `set-job-status`, `job-scheduler-stop`, `job-scheduler-start`, `run-workflow`, `cancel-workflow-run`, `set-workflow-status` | `save-job`, `delete-job`, `save-job-schedule`, `check-job`, `validate-job-transfer`, `save-job-transfer`, `save-workflow`, `delete-workflow`, `save-workflow-schedule`, `check-workflow` |
+| `jobs`        | view, operate, edit       | `get-jobs`, `get-job`, `get-job-catalogue`, `get-job-runs`, `get-job-run`, `get-job-versions`, `job-scheduler-status`, `-upcoming`, `-events`, `get-job-transfer-params`, `-catalogue`, `get-job-transfer`, `get-workflows`, `get-workflow`, `get-workflow-runs`, `get-workflow-run`, `get-workflow-versions`, `get-dependency-targets` | `run-job`, `cancel-job-run`, `set-job-status`, `job-scheduler-stop`, `job-scheduler-start`, `run-workflow`, `cancel-workflow-run`, `set-workflow-status` | `save-job`, `delete-job`, `save-job-schedule`, `check-job`, `validate-job-transfer`, `save-job-transfer`, `save-workflow`, `delete-workflow`, `save-workflow-schedule`, `check-workflow` |
 | `datasources` | view, edit                | PDI Core datasources, directories, incoming files, archive, grammars, viewer settings |                       | Their saves and deletes, lanes (`set-ds-active`), directories, grammars, viewer settings |
 | `files`       | view, operate             | The file log: `get-files-day`, `get-ds-file-log(-text)`, `search-files`, `get-pdi-state` | `set-file-status`, lane locks, `check-ds-upload`, `upload-ds-file`, `refresh-file-summary` | |
 | `instance`    | view, operate, edit       | `parameters`, health and sessions, `get-config-catalogue`, `get-config-changes`, `get-temp-tables` | `drop-temp-tables`                | `set-config-option`, `reload-config`              |
@@ -1582,21 +1582,38 @@ scheduled).
   one kept there; `create` refuses an existing name (`409`). A param kept in a file is not written here (`409`): it is
   changed in its file, or moved to the database on the Transfers page. An invalid param is `400`.
 
+#### Dependencies
+A job or a workflow may wait for other runs (see [docs/jobs.md](../jobs.md#dependencies)). The condition is
+`{"kind": "RUN_STATUS", "targets": [{"type": "control|transfer|job|workflow", "name", "window": {"kind": "today"}}]}`; the
+window `kind` is `today`, `hours` (+ `hours`, 1 to 720), `since_last_run` or `data_date` (a control only, + `days_ago`, 0 to
+31). A workflow takes it as `definition.condition` (also `FILE_EXISTS` and `FILE_COUNT`).
+
+* `GET /api/get-dependency-targets`: `type` (`control`, `transfer`, `job`, `workflow`): `{type, names}`, the names a
+  condition can wait for. Area *Jobs*, View.
+* `check-job` takes `name` as well (a job may not wait for itself) and answers `missing`, the targets that do not exist.
+* `get-jobs` and `get-workflows` give each row `waits_for` and `unmet`; `get-job` and `get-workflow` give `unmet`. `last_run`
+  is the last run that really ran: a run that a condition that was not met canceled does not count, `unmet` says how many
+  such runs came after it and when the last was.
+* `get-job-runs` takes `hide_unmet` (`true` leaves out the runs canceled by a condition that was not met).
+
 #### Workflows
 A workflow is a list of jobs run one after another (see [docs/jobs.md](../jobs.md#workflows)). The routes are in the area
 *Jobs* and answer `404` while `[JOBS] enabled` is off; `503` when the tables of the workflows are missing (run
 `migrations/v0.10.0/upgrade.sql`). A workflow is `{workflow_id, workflow_name, description, status ('Y' on, 'N' off),
 schedule_config, notify_email, version, steps (the names of its jobs), created_*, updated_*, definition}`; the `definition`
-is `{version, steps: [{job}], parameters: [{name, value, secret}], timeout, overlap}`, and the value of a secret parameter
+is `{version, steps: [{job}], parameters: [{name, value, secret}], timeout, overlap, condition}`, and the value of a secret parameter
 is `********`, as for a job.
 
-* `GET /api/get-workflows`: every workflow without its definition, each with `last_run`, `next_fire` and `running`;
+* `GET /api/get-workflows`: every workflow without its definition, each with `last_run` (the last *real* run), `unmet`
+  (`{count, last}`: the runs the condition of the workflow stopped since then, or null), `waits_for` (the targets of its
+  condition), `next_fire` and `running`;
   `manager` (the workflow manager of this server) and `scheduler` (the state of the job scheduler).
 * `GET /api/get-workflow`: `name`: one workflow with its definition and `jobs`, one entry per step
   (`{job_name, exists, status}`: whether the job exists and is on, which the editor notes).
-* `POST /api/check-workflow`: body `{definition}`: checks it without saving: at least one step, every job exists, **a job
+* `POST /api/check-workflow`: body `{name, definition}`: checks it without saving: at least one step, every job exists, **a job
   at most once** (the message names it and its steps: "load is repeated, at steps 2 and 5"), parameters, `timeout`,
-  `overlap`. Answers `{ok, problems, definition}`.
+  `overlap`, the `condition`. Answers `{ok, problems, missing, definition}`; `missing` lists the targets of the condition that
+  do not exist (a warning, the workflow can still be saved).
 * `POST /api/save-workflow`: body `{name, definition, description, notify_email, status, schedule, create}`: creates a
   workflow or changes it (the name is not changed). `notify_email` empty: `[JOBS] default_email`. What is not given
   stays; `create` refuses an existing name (`409`); a definition that does not check is `422`. A change of the definition
@@ -1608,7 +1625,8 @@ is `********`, as for a job.
   when its `overlap` is `skip`; one without steps is refused (`409`).
 * `POST /api/cancel-workflow-run`: `run_id`: cancels a workflow of this server: the step that runs is canceled and the rest
   skipped; the run ends `C`. `409` for a run of another server, `404` for one that has ended.
-* `GET /api/get-workflow-runs`: `name` (all when omitted), `limit` (100): the runs, latest first: `run_id`, `workflow_id`,
+* `GET /api/get-workflow-runs`: `name` (all when omitted), `limit` (100), `hide_unmet` (leave out the runs its condition
+  stopped): the runs, latest first: `run_id`, `workflow_id`,
   `workflow_name`, `trigger_type`, `scheduled_time`, `queued_time`, `start_time`, `end_time`, `status` (`I` waiting, `S`
   running, `D` done, `E` error, `C` canceled), `step_no` (the step it got to), `steps_total`, `message`, `runner`,
   `requested_by`, `definition_version`, `log_lines`, `mail_status`.

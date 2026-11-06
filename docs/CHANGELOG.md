@@ -6,6 +6,18 @@ The full notes and upgrade steps of each release are in `migrations/<version>/` 
 
 ---
 
+## v0.11.0 — 2026-11-07
+
+No database change and no new option: there is no `upgrade.sql`. Update the source, reinstall and restart (`migrations/v0.11.0/README.md`).
+
+- **Dependencies**: a new condition **Run status** for jobs and, before the first step, for workflows. It waits for controls, transfers, jobs or workflows, each with a window (ended today, in the last N hours, since the last successful run, or a control that has the data of a day). Every target must have no run going and its last ended run must be Done ([docs/jobs.md](jobs.md#dependencies)).
+- **Why it did not run**: a condition that is not met cancels the run with the reason in the message ("the control X has not ended today (last at ...)"); a workflow stops at its start as a warning, without a mail. A target that does not exist is an error; *Check* tells it before.
+- **Lists show the last real run**: a run canceled by a condition that was not met is not the last run; the list notes "condition not met at 07:10 (12 times since)", says what the job or workflow **waits for**, and the *Runs* dialog can hide such runs.
+- **UI**: one condition editor for jobs and workflows, with a new *Condition* tab in the workflow editor.
+- **API**: `get-dependency-targets` (area *Jobs*, View); `check-job` and `check-workflow` take `name` and answer `missing`; `get-jobs` and `get-workflows` add `waits_for` and `unmet`; `hide_unmet` on `get-job-runs` and `get-workflow-runs` ([docs/api](api/README.md#dependencies)).
+
+---
+
 ## v0.10.0 — 2026-11-06
 
 New tables `rapo_workflow`, `rapo_workflow_version`, `rapo_workflow_run`, `rapo_workflow_run_step`, `rapo_workflow_log` and a column
