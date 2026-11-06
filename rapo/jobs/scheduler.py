@@ -22,8 +22,9 @@ from ..core.lease import Lease, JOBS_ROW, RENEWED, LOST
 from ..core.runner import get_runner_name
 from ..logger import logger
 
-from . import store
+from . import store, workflow_store
 from .manager import manager as default_manager, MISSED, FAILED
+from .workflow_manager import manager as default_workflows
 
 LEASE_INTERVAL = 10
 CONFIG_CHECK_INTERVAL = 5
@@ -68,10 +69,13 @@ class JobScheduler:
         Whether this server currently holds the lease.
     schedule : dict
         The schedules of the jobs that are on, by job ID.
+    workflow_schedule : dict
+        The schedules of the workflows that are on, by workflow ID.
     """
 
-    def __init__(self, manager=None):
+    def __init__(self, manager=None, workflows=None):
         self.manager = manager or default_manager
+        self.workflows = workflows or default_workflows
         self.instance_id = f'{get_runner_name()}:{os.getpid()}:' \
                            f'{uuid.uuid4().hex[:8]}:jobs'
         self.lease = Lease(JOBS_ROW, self.instance_id,
@@ -82,6 +86,7 @@ class JobScheduler:
         self.wake = th.Event()
         self.reload = True
         self.schedule = {}
+        self.workflow_schedule = {}
         self.cursor = None
         self.signature = None
         self.loaded = 0
@@ -181,6 +186,8 @@ class JobScheduler:
                 'alive': alive,
             },
             'scheduled_jobs': len(self.schedule) if self.leader else None,
+            'scheduled_workflows': len(self.workflow_schedule)
+            if self.leader else None,
             'last_fire': self.last_fire,
             'next_maintenance': (dt.datetime.fromtimestamp(
                 self.next_maintenance).replace(microsecond=0)
@@ -188,6 +195,7 @@ class JobScheduler:
             'maintenance_interval': setting('maintenance_interval'),
             'lease_timeout': setting('lease_timeout'),
             'manager': self.manager.status(),
+            'workflows': self.workflows.status(),
             'server_time': dt.datetime.now().replace(microsecond=0),
         }
 
@@ -242,6 +250,7 @@ class JobScheduler:
             return
         self.leader_since = None
         self.schedule = {}
+        self.workflow_schedule = {}
         self.lease.release()
         logger.info('Job scheduler lease released')
         self._notify()
@@ -255,19 +264,48 @@ class JobScheduler:
         """Reload the schedules when a job changed."""
         if not self.reload and now - self.checked >= CONFIG_CHECK_INTERVAL:
             self.checked = now
-            if store.signature() != self.signature:
+            if self._signature() != self.signature:
                 self.reload = True
         if not self.reload and now - self.loaded < \
                 setting('refresh_interval'):
             return
         # Read before the schedules, so that a change committed while they
         # are read is seen again by the next check.
-        signature = store.signature()
+        signature = self._signature()
         self.schedule = store.read_scheduled()
+        self.workflow_schedule = self._read_workflows()
         self.signature = signature
         self.loaded = self.checked = now
         self.reload = False
-        logger.debug(f'Job schedule: {len(self.schedule)} jobs found')
+        logger.debug(f'Job schedule: {len(self.schedule)} jobs and '
+                     f'{len(self.workflow_schedule)} workflows found')
+
+    def _signature(self):
+        """What changes when a job, a workflow or a schedule does."""
+        return store.signature(), self._workflow_signature()
+
+    def _workflow_signature(self):
+        try:
+            return workflow_store.signature()
+        except store.StoreError:
+            self._tables_missing()
+            return None
+
+    def _read_workflows(self):
+        try:
+            return workflow_store.read_scheduled()
+        except store.StoreError:
+            self._tables_missing()
+            return {}
+
+    def _tables_missing(self):
+        """Tell once that the tables of the workflows are missing: the
+        jobs go on without them."""
+        if not getattr(self, 'warned_tables', False):
+            self.warned_tables = True
+            logger.warning('The workflow tables are missing: run '
+                           'migrations/v0.10.0/upgrade.sql. The workflows '
+                           'are not scheduled.')
 
     def _fire(self):
         """Submit every fire between the cursor and now."""
@@ -280,9 +318,15 @@ class JobScheduler:
             for moment in schedule.next_fire(item['schedule'], self.cursor,
                                              limit=MISSED_LIMIT,
                                              before=border):
-                fires.append((moment, job_id, item['job_name']))
+                fires.append((moment, 'job', job_id, item['job_name']))
+        for workflow_id, item in self.workflow_schedule.items():
+            for moment in schedule.next_fire(item['schedule'], self.cursor,
+                                             limit=MISSED_LIMIT,
+                                             before=border):
+                fires.append((moment, 'workflow', workflow_id,
+                              item['workflow_name']))
         self.cursor = now
-        for moment, job_id, name in sorted(fires):
+        for moment, kind, item_id, name in sorted(fires):
             # A pass that took longer than the lease renews it here, so a
             # server that lost it while busy does not submit fires the new
             # holder has already recorded as missed.
@@ -293,30 +337,35 @@ class JobScheduler:
                                'of this pass abandoned')
                 break
             late = (now - moment).total_seconds()
+            workflow_id = item_id if kind == 'workflow' else None
+            job_id = None if kind == 'workflow' else item_id
             if late > LATE_TOLERANCE:
                 self._record(job_id, MISSED, moment,
                              f'Fire found {int(late)} seconds late, '
-                             'scheduler was not running.')
+                             'scheduler was not running.', workflow_id)
                 continue
             try:
-                self.manager.submit(name, store.SCHEDULE,
-                                    scheduled_time=moment)
+                (self.workflows if kind == 'workflow'
+                 else self.manager).submit(name, store.SCHEDULE,
+                                           scheduled_time=moment)
             except Exception as error:
                 if not isinstance(error, store.StoreError):
                     logger.error()
                 else:
-                    logger.warning(f'Job {name} fire of {moment} not run: '
-                                   f'{error}')
-                self._record(job_id, FAILED, moment, str(error))
+                    logger.warning(f'The {kind} {name} fire of {moment} not '
+                                   f'run: {error}')
+                self._record(job_id, FAILED, moment, str(error), workflow_id)
             self.last_fire = moment
         if fires:
             self._notify()
 
-    def _record(self, job_id, event_type, moment, message):
+    def _record(self, job_id, event_type, moment, message,
+                workflow_id=None):
         try:
             store.add_event(job_id, store.SCHEDULE, event_type,
                             scheduled_time=moment, message=message,
-                            runner=self.manager.name)
+                            runner=self.manager.name,
+                            workflow_id=workflow_id)
         except Exception:
             logger.error()
 
@@ -333,11 +382,17 @@ class JobScheduler:
             for moment in schedule.next_fire(item['schedule'], since,
                                              limit=MISSED_LIMIT,
                                              before=until):
-                fires.append((moment, job_id))
-        fires = sorted(fires)[-MISSED_LIMIT:]
-        for moment, job_id in fires:
+                fires.append((moment, job_id, None))
+        for workflow_id, item in self._read_workflows().items():
+            for moment in schedule.next_fire(item['schedule'], since,
+                                             limit=MISSED_LIMIT,
+                                             before=until):
+                fires.append((moment, None, workflow_id))
+        fires = sorted(fires, key=lambda item: (item[0], item[1] or 0,
+                                                item[2] or 0))[-MISSED_LIMIT:]
+        for moment, job_id, workflow_id in fires:
             self._record(job_id, MISSED, moment,
-                         'Job scheduler was not running.')
+                         'Job scheduler was not running.', workflow_id)
         if fires:
             logger.warning(f'{len(fires)} missed job fires recorded since '
                            f'{since:%Y-%m-%d %H:%M:%S}')
@@ -355,6 +410,12 @@ class JobScheduler:
             days = setting('history_retention_days')
             deleted = store.clean_runs(days)
             logger.info(f'{deleted} job runs older than {days} days deleted')
+            try:
+                deleted = workflow_store.clean_runs(days)
+                logger.info(f'{deleted} workflow runs older than {days} '
+                            'days deleted')
+            except store.StoreError:
+                self._tables_missing()
             days = setting('event_retention_days')
             deleted = store.clean_events(days)
             logger.info(f'{deleted} job scheduler events older than {days} '
@@ -370,7 +431,8 @@ class JobScheduler:
                  self.checked + CONFIG_CHECK_INTERVAL]
         if self.next_maintenance:
             wakes.append(self.next_maintenance)
-        for item in self.schedule.values():
+        for item in list(self.schedule.values()) + list(
+                self.workflow_schedule.values()):
             fire = schedule.next_fire(item['schedule'], self.cursor)
             if fire:
                 wakes.append(fire[0].timestamp())
@@ -396,6 +458,25 @@ def upcoming(hours=24, job_name=None, limit=1000):
         for moment in schedule.next_fire(item['schedule'], now,
                                          limit=limit, before=until):
             fires.append((moment, item['job_name']))
+    return sorted(fires)[:limit]
+
+
+def upcoming_workflows(hours=24, workflow_name=None, limit=1000):
+    """Get the fires of the workflows that are on in the next `hours`, as
+    (moment, workflow_name) in order."""
+    now = dt.datetime.now().replace(microsecond=0)
+    until = now + dt.timedelta(hours=hours)
+    fires = []
+    try:
+        scheduled = workflow_store.read_scheduled()
+    except store.StoreError:
+        return []
+    for item in scheduled.values():
+        if workflow_name and item['workflow_name'] != workflow_name:
+            continue
+        for moment in schedule.next_fire(item['schedule'], now,
+                                         limit=limit, before=until):
+            fires.append((moment, item['workflow_name']))
     return sorted(fires)[:limit]
 
 

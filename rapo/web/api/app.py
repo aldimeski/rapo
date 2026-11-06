@@ -52,6 +52,10 @@ from ...jobs import catalogue as job_catalogue
 from ...jobs import definition as job_definition
 from ...jobs import store as job_store
 from ...jobs.manager import manager as job_manager
+from ...jobs.workflow_manager import manager as workflow_manager
+from ...jobs import workflow as job_workflow
+from ...jobs import workflow_store
+from ...jobs.scheduler import upcoming_workflows
 from ...jobs.scheduler import scheduler as job_scheduler
 from ...jobs.scheduler import upcoming as job_upcoming
 from ...analysis import datasets
@@ -101,6 +105,7 @@ async def lifespan(app):
     transfers.listeners.append(events.poke)
     scheduler.listeners.append(events.poke_scheduler)
     job_manager.listeners.append(events.poke_jobs)
+    workflow_manager.listeners.append(events.poke_jobs)
     job_scheduler.listeners.append(events.poke_jobs)
     sessions.listeners.append(events.emit_analysis)
     explainer.listeners.append(events.emit_discrepancy)
@@ -117,6 +122,7 @@ async def lifespan(app):
     await asyncio.to_thread(runner.start)
     await asyncio.to_thread(transfers.start)
     await asyncio.to_thread(job_manager.start)
+    await asyncio.to_thread(workflow_manager.start)
     scheduler.start()
     job_scheduler.start()
     sessions.start()
@@ -132,6 +138,7 @@ async def lifespan(app):
     await asyncio.to_thread(sessions.stop)
     await asyncio.to_thread(job_scheduler.stop)
     await asyncio.to_thread(scheduler.stop)
+    await asyncio.to_thread(workflow_manager.stop)
     await asyncio.to_thread(job_manager.stop)
     await asyncio.to_thread(transfers.stop)
     await asyncio.to_thread(runner.stop)
@@ -490,6 +497,7 @@ def apply_config():
     # [JOBS] enabled the job manager and the job scheduler.
     transfers.sync()
     job_manager.sync()
+    workflow_manager.sync()
     job_scheduler.sync()
     pending = [item for item in config.changes() if item['restart']]
     names = ', '.join(f"{item['section']}.{item['option']}"
@@ -2765,6 +2773,19 @@ def present_job(row, last_run=None, next_fire=None, running=None):
     return job
 
 
+def jobs_in_workflows():
+    """Get {job name: [names of the workflows that have it as a step]};
+    empty while the workflow tables are missing."""
+    found = {}
+    try:
+        for row in workflow_store.read_workflows():
+            for name in row['steps']:
+                found.setdefault(name, []).append(row['workflow_name'])
+    except job_store.StoreError:
+        pass
+    return found
+
+
 def next_job_fires():
     """Get {job_id: the next fire} of the jobs that are on."""
     now = dt.datetime.now().replace(microsecond=0)
@@ -2782,13 +2803,15 @@ def get_jobs():
     rows = job_answer(job_store.read_jobs)
     last = job_answer(job_store.read_last_runs)
     fires = next_job_fires()
+    in_workflows = jobs_in_workflows()
     jobs = []
     for row in rows:
         run = last.get(row['job_id'])
         running = job_manager.busy(row['job_id']) or bool(
             run and run['status'] in job_store.ACTIVE)
-        jobs.append(present_job(row, run, fires.get(row['job_id']),
-                                running))
+        item = present_job(row, run, fires.get(row['job_id']), running)
+        item['workflows'] = in_workflows.get(row['job_name'], [])
+        jobs.append(item)
     return {'jobs': jobs, 'manager': job_manager.status(),
             'scheduler': job_scheduler.status()['state']}
 
@@ -2802,7 +2825,9 @@ def get_job(name: str):
     fires = next_job_fires()
     running = job_manager.busy(row['job_id']) or bool(
         last and last['status'] in job_store.ACTIVE)
-    return present_job(row, last, fires.get(row['job_id']), running)
+    answer = present_job(row, last, fires.get(row['job_id']), running)
+    answer['workflows'] = jobs_in_workflows().get(row['job_name'], [])
+    return answer
 
 
 @api.get('/get-job-catalogue', dependencies=JOBS)
@@ -2870,13 +2895,28 @@ def save_job(data: dict = fastapi.Body(...)):
 
 
 @api.delete('/delete-job', dependencies=JOBS)
-def delete_job(name: str):
+def delete_job(name: str, confirm: bool = False):
     """Delete a job with its versions; its runs stay until their retention
-    ends. A job running or waiting is refused."""
+    ends. A job running or waiting is refused. A job that is a step of
+    workflows is refused (`409`, the message names them: `get-jobs` and
+    `get-job` list them as `workflows`) until `confirm` is true; then it is
+    taken out of their steps (a new version of each) and a workflow left
+    without steps is switched off. The answer lists them as `workflows`."""
+    used = jobs_in_workflows().get(name, [])
+    if used and not confirm:
+        raise fastapi.HTTPException(
+            status_code=409,
+            detail=f'Job {name} is a step of the workflow'
+                   f'{"" if len(used) == 1 else "s"} {", ".join(used)}: '
+                   'confirm to take it out of '
+                   f'{"it" if len(used) == 1 else "them"}.')
     job_answer(job_store.delete_job, name)
+    changed = []
+    if used:
+        changed = job_answer(workflow_store.remove_job, name)
     job_scheduler.refresh()
     events.poke_jobs()
-    return {'status': 200}
+    return {'status': 200, 'workflows': changed}
 
 
 @api.post('/set-job-status', dependencies=JOBS)
@@ -3061,10 +3101,22 @@ def job_scheduler_start():
 
 @api.get('/job-scheduler-upcoming', dependencies=JOBS)
 def job_scheduler_upcoming(hours: int = fastapi.Query(24, ge=1, le=24*31),
-                           job_name: str | None = None):
-    """Get the fires of the jobs that are on in the next `hours`."""
-    return [{'scheduled_time': moment, 'job_name': name}
-            for moment, name in job_upcoming(hours, job_name)]
+                           job_name: str | None = None,
+                           workflow_name: str | None = None):
+    """Get the fires of the jobs and the workflows that are on in the next
+    `hours`, in order: `{scheduled_time, kind ('job' or 'workflow'),
+    job_name, workflow_name}`. A name narrows to that job or workflow."""
+    fires = []
+    if not workflow_name:
+        fires += [{'scheduled_time': moment, 'kind': 'job',
+                   'job_name': name, 'workflow_name': None}
+                  for moment, name in job_upcoming(hours, job_name)]
+    if not job_name:
+        fires += [{'scheduled_time': moment, 'kind': 'workflow',
+                   'job_name': None, 'workflow_name': name}
+                  for moment, name in upcoming_workflows(hours,
+                                                         workflow_name)]
+    return sorted(fires, key=lambda item: item['scheduled_time'])
 
 
 @api.get('/job-scheduler-events', dependencies=JOBS)
@@ -3078,8 +3130,234 @@ def job_scheduler_events(job_name: str | None = None,
     job_id = job_answer(job_store.get_job, job_name)['job_id'] \
         if job_name else None
     since = window_start(hours) if hours else None
-    return job_answer(job_store.read_events, limit, job_id, event_type,
-                      trigger_type, since)
+    events_read = job_answer(job_store.read_events, limit, job_id,
+                             event_type, trigger_type, since)
+    names = {}
+    if any(item.get('workflow_id') for item in events_read):
+        try:
+            names = {item['workflow_id']: item['workflow_name']
+                     for item in workflow_store.read_workflows()}
+        except job_store.StoreError:
+            pass
+    for item in events_read:
+        item['workflow_name'] = names.get(item.get('workflow_id'))
+    return events_read
+
+
+# Workflows: jobs run one after another, see docs/jobs-design.md section 11.
+
+def present_workflow(row, last_run=None, next_fire=None, running=None):
+    """Get a workflow for the browser: its definition as an object with the
+    values of secret parameters hidden, and the names of its jobs."""
+    workflow_row = {key: value for key, value in row.items()
+                    if key != 'definition'}
+    if 'definition' in row:
+        definition = json.loads(row['definition'])
+        workflow_row['definition'] = job_definition.mask_secrets(definition)
+        workflow_row['steps'] = job_workflow.job_names(definition)
+    workflow_row['last_run'] = last_run
+    workflow_row['next_fire'] = next_fire
+    workflow_row['running'] = running
+    return workflow_row
+
+
+def next_workflow_fires():
+    """Get {workflow_id: the next fire} of the workflows that are on."""
+    now = dt.datetime.now().replace(microsecond=0)
+    fires = {}
+    for workflow_id, item in workflow_store.read_scheduled().items():
+        fire = schedule.next_fire(item['schedule'], now)
+        fires[workflow_id] = fire[0] if fire else None
+    return fires
+
+
+def workflow_running(row, last_run):
+    return workflow_manager.busy(row['workflow_id']) or bool(
+        last_run and last_run['status'] in job_store.ACTIVE)
+
+
+@api.get('/get-workflows', dependencies=JOBS)
+def get_workflows():
+    """Get every workflow (without its definition) with the names of its
+    jobs (`steps`), its last run, its next fire and whether it is running or
+    waiting, and the workflow manager."""
+    rows = job_answer(workflow_store.read_workflows)
+    last = job_answer(workflow_store.read_last_runs)
+    fires = next_workflow_fires()
+    return {'workflows': [
+        present_workflow(row, last.get(row['workflow_id']),
+                         fires.get(row['workflow_id']),
+                         workflow_running(row, last.get(row['workflow_id'])))
+        for row in rows],
+        'manager': workflow_manager.status(),
+        'scheduler': job_scheduler.status()['state']}
+
+
+@api.get('/get-workflow', dependencies=JOBS)
+def get_workflow(name: str):
+    """Get a workflow with its definition; the values of secret parameters
+    are hidden (`********`) and kept when it is saved with them so. `jobs`
+    tells for each step whether its job exists and is on."""
+    row = job_answer(workflow_store.get_workflow, name)
+    last = job_answer(workflow_store.read_last_runs).get(row['workflow_id'])
+    answer = present_workflow(
+        row, last, next_workflow_fires().get(row['workflow_id']),
+        workflow_running(row, last))
+    known = {item['job_name']: item['status']
+             for item in job_answer(job_store.read_jobs)}
+    answer['jobs'] = [{'job_name': item, 'exists': item in known,
+                       'status': known.get(item)}
+                      for item in answer['steps']]
+    return answer
+
+
+@api.post('/check-workflow', dependencies=JOBS)
+def check_workflow(data: dict = fastapi.Body(...)):
+    """Check a workflow definition without saving it: at least one step, a
+    job at most once (the answer names the job and its steps), the jobs must
+    exist, parameters, timeout and overlap. Answers `problems` (empty when it
+    can be saved) and the definition with its defaults filled in."""
+    try:
+        definition = job_workflow.normalize(data.get('definition'))
+    except job_definition.DefinitionError as error:
+        return {'ok': False, 'problems': error.problems, 'definition': None}
+    problems = job_workflow.validate(
+        definition, job_answer(workflow_store.known_jobs))
+    return {'ok': not problems, 'problems': problems,
+            'definition': job_definition.mask_secrets(definition)}
+
+
+@api.post('/save-workflow', dependencies=JOBS)
+def save_workflow(data: dict = fastapi.Body(...)):
+    """Create or change a workflow: `name`, `definition` and, when given,
+    `description`, `notify_email` (empty: `[JOBS] default_email`), `status`
+    ('Y' on, 'N' off) and `schedule` (the units of `save-workflow-schedule`,
+    null for none); what is not given stays. `create` refuses an existing
+    name. A change of the definition or the schedule makes a new version."""
+    name = job_answer(job_store.check_name, data.get('name'))
+    stored = job_answer(workflow_store.read_workflow, name)
+    try:
+        definition = job_workflow.normalize(data.get('definition'))
+        definition = job_definition.restore_secrets(
+            definition, json.loads(stored['definition']) if stored
+            else None)
+    except job_definition.DefinitionError as error:
+        raise fastapi.HTTPException(status_code=422, detail=str(error))
+    values = {key: data[key] for key in ('description', 'notify_email',
+                                         'status') if key in data}
+    if 'schedule' in data:
+        try:
+            values['schedule_config'] = job_store.schedule_json(
+                data['schedule'])
+        except (ValueError, TypeError, AttributeError) as error:
+            raise fastapi.HTTPException(status_code=422, detail=str(error))
+    saved = job_answer(workflow_store.save_workflow, name, definition,
+                       create=bool(data.get('create')), **values)
+    job_scheduler.refresh()
+    events.poke_jobs()
+    return present_workflow(saved)
+
+
+@api.delete('/delete-workflow', dependencies=JOBS)
+def delete_workflow(name: str):
+    """Delete a workflow with its versions; its runs stay until their
+    retention ends. A workflow running or waiting is refused."""
+    job_answer(workflow_store.delete_workflow, name)
+    job_scheduler.refresh()
+    events.poke_jobs()
+    return {'status': 200}
+
+
+@api.post('/set-workflow-status', dependencies=JOBS)
+def set_workflow_status(name: str, enabled: bool):
+    """Switch a workflow on or off: off is not scheduled, a manual run is
+    still possible."""
+    job_answer(workflow_store.set_status, name, enabled)
+    job_scheduler.refresh()
+    events.poke_jobs()
+    return {'status': 200}
+
+
+@api.post('/save-workflow-schedule', dependencies=JOBS)
+def save_workflow_schedule(data: dict = fastapi.Body(...)):
+    """Set the schedule of a workflow, the units of a control schedule
+    ({mday, wday, hour, min, sec}); no units: not scheduled. A new
+    version."""
+    try:
+        config_json = job_store.schedule_json(data.get('schedule'))
+    except (ValueError, TypeError, AttributeError) as error:
+        raise fastapi.HTTPException(status_code=422, detail=str(error))
+    saved = job_answer(workflow_store.write_schedule, data.get('name'),
+                       config_json)
+    job_scheduler.refresh()
+    events.poke_jobs()
+    return present_workflow(saved)
+
+
+@api.post('/run-workflow', dependencies=JOBS)
+def run_workflow(name: str, data: dict | None = fastapi.Body(None)):
+    """Start a run of a workflow. `parameters` of the body give values of the
+    workflow's parameters for this run. A workflow that is running or waiting
+    is refused when it may not overlap with itself; one without steps is
+    refused."""
+    run_id = job_answer(workflow_manager.submit, name, job_store.MANUAL,
+                        requested_by=auth.current().requester,
+                        parameters=(data or {}).get('parameters'))
+    events.poke_jobs()
+    return {'status': 200, 'run_id': run_id}
+
+
+@api.post('/cancel-workflow-run', dependencies=JOBS)
+def cancel_workflow_run(run_id: int):
+    """Cancel a running workflow of this server: the step that runs is
+    canceled and the rest skipped."""
+    if not workflow_manager.cancel(run_id):
+        row = job_answer(workflow_store.read_run, run_id)
+        if row and row['status'] in job_store.ACTIVE:
+            raise fastapi.HTTPException(
+                status_code=409,
+                detail=f'The run belongs to {row["runner"]}, cancel it '
+                       'there.')
+        raise fastapi.HTTPException(
+            status_code=404,
+            detail='Not a run of this server, or it has finished.')
+    events.poke_jobs()
+    return {'status': 200}
+
+
+@api.get('/get-workflow-runs', dependencies=JOBS)
+def get_workflow_runs(name: str | None = None,
+                      limit: int = fastapi.Query(100, ge=1, le=1000)):
+    """Get the runs of a workflow, or of every workflow, latest first,
+    without their steps and log."""
+    workflow_id = job_answer(workflow_store.get_workflow, name)[
+        'workflow_id'] if name else None
+    return job_answer(workflow_store.read_runs, workflow_id, limit)
+
+
+@api.get('/get-workflow-run', dependencies=JOBS)
+def get_workflow_run(run_id: int):
+    """Get one run of a workflow with its steps (`steps`: the job, the run
+    of the job `job_run_id`, its status and message) and its log (`lines`,
+    `run_log`). Step statuses are those of a run, `W` (waiting for its turn)
+    and `K` (skipped)."""
+    row = job_answer(workflow_store.read_run, run_id)
+    if not row:
+        raise fastapi.HTTPException(
+            status_code=404, detail=f'Workflow run {run_id} not found')
+    return row
+
+
+@api.get('/get-workflow-versions', dependencies=JOBS)
+def get_workflow_versions(name: str):
+    """Get the versions of a workflow, the newest first, with their
+    definitions (secret values hidden)."""
+    row = job_answer(workflow_store.get_workflow, name)
+    versions = job_answer(workflow_store.read_versions, row['workflow_id'])
+    for item in versions:
+        item['definition'] = job_definition.mask_secrets(
+            json.loads(item['definition']))
+    return versions
 
 
 scopes.check_routes(api)

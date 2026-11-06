@@ -48,8 +48,10 @@ class Run:
     """Represents one run owned by the manager."""
 
     def __init__(self, run_id, job, trigger, spec, overlap, timeout,
-                 event_id=None):
+                 event_id=None, mail=True):
         self.run_id = run_id
+        # False for a step of a workflow: the workflow sends its own mail.
+        self.mail = mail
         self.job = {'job_id': job['job_id'], 'job_name': job['job_name'],
                     'notify_email': job['notify_email']}
         self.job_id = job['job_id']
@@ -157,7 +159,7 @@ class JobManager:
     # Running
 
     def submit(self, name, trigger, scheduled_time=None, requested_by=None,
-               parameters=None):
+               parameters=None, workflow_run_id=None, extra_secrets=()):
         """Initiate a run of the job and queue it. Returns the ID of the run.
 
         A start while the job still runs or waits follows the job's
@@ -165,12 +167,20 @@ class JobManager:
         for a scheduled one (`skip`); queued (`queue`); or run at once
         (`allow`). `parameters` are values for this run of parameters the
         job defines.
+
+        A run that is a step of a workflow run (`workflow_run_id`) always
+        queues behind a run of the job that is still going, whatever the
+        `overlap` of the job; it sends no failure mail, as the workflow
+        sends one; and `extra_secrets` are values hidden in its log besides
+        the secrets of the job.
         """
         if not self.active:
             raise store.StoreError('The job manager is not running.', 503)
         job = store.get_job(name)
         definition = definitions.normalize(job['definition'])
         overlap = definition['overlap']
+        if workflow_run_id is not None:
+            overlap = 'queue'
         given = self._check_parameters(definition, parameters)
         timeout = definition.get('timeout')
         if timeout is None:
@@ -184,15 +194,17 @@ class JobManager:
             run_id = store.add_run(job, trigger,
                                    scheduled_time=scheduled_time,
                                    requested_by=requested_by,
-                                   runner=self.name)
+                                   runner=self.name,
+                                   workflow_run_id=workflow_run_id)
         spec = {'job_name': job['job_name'], 'job_id': job['job_id'],
                 'run_id': run_id, 'trigger': trigger,
                 'scheduled_time': scheduled_time, 'definition': definition,
-                'parameters': given,
+                'parameters': given, 'extra_secrets': list(extra_secrets),
                 'max_output_kb': int(setting('max_output_kb'))}
         event_id = self._record(job['job_id'], trigger, FIRED,
                                 scheduled_time, run_id)
-        run = Run(run_id, job, trigger, spec, overlap, timeout, event_id)
+        run = Run(run_id, job, trigger, spec, overlap, timeout, event_id,
+                  mail=workflow_run_id is None)
         with self.condition:
             self.pending.append(run)
             self.condition.notify_all()
@@ -458,7 +470,14 @@ class JobManager:
             store.trim_log(run.job_id, int(setting('log_max_lines')))
         except Exception:
             logger.error()
-        if status == store.ERROR and mail:
+        if status == store.ERROR and mail and not run.mail:
+            try:
+                store.update_run(run.run_id, mail_status=(
+                    'Not sent: the run is a step of a workflow, which sends '
+                    'its own mail.'))
+            except Exception:
+                logger.error()
+        elif status == store.ERROR and mail:
             self._mail(run)
 
     def _mail(self, run):

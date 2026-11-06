@@ -449,7 +449,9 @@ def execute(spec, emit, ctx=None, now=None):
     except (KeyError, TypeError) as error:
         outcome['message'] = f'The run is not described well: {error}'
         return outcome
-    log = RunLog(emit, int(max_kb) * 1024, secrets)
+    # The secrets of a workflow that runs the job are hidden too.
+    log = RunLog(emit, int(max_kb) * 1024,
+                 list(secrets) + list(spec.get('extra_secrets') or []))
     workdir = tempfile.mkdtemp(prefix='rapo-job-')
     counter = _counter()
     stage = None

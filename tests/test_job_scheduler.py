@@ -23,6 +23,7 @@ from rapo import config as rapo_config  # noqa: E402
 from rapo.core import lease as leases  # noqa: E402
 from rapo.database import db  # noqa: E402
 from rapo.jobs import notify, scheduler as schedulers, store  # noqa: E402
+from rapo.jobs import workflow_store  # noqa: E402
 
 EVERY_SECOND = '{"sec": "/1"}'
 EVERY_MINUTE = '{"min": "/1", "sec": "0"}'
@@ -45,6 +46,23 @@ class FakeManager:
         return {'active': True}
 
 
+class FakeWorkflows(FakeManager):
+    def status(self):
+        return {'active': True, 'running': []}
+
+
+def workflow(name='flow', schedule=EVERY_SECOND, status='Y', jobs=('a',)):
+    for item in jobs:
+        if not store.read_job(item):
+            store.save_job(item, {'main': {'type': 'SQL',
+                                           'text': 'commit'}})
+    saved = workflow_store.save_workflow(
+        name, {'steps': list(jobs)}, schedule_config=schedule)
+    if status == 'N':
+        workflow_store.set_status(name, False)
+    return saved
+
+
 def job(name='nightly', schedule=EVERY_SECOND, status='Y'):
     saved = store.save_job(name, {'main': {'type': 'SQL', 'text': 'commit'}},
                            schedule_config=schedule)
@@ -65,7 +83,9 @@ class SchedulerCase(unittest.TestCase):
             db.execute(lease_table.insert().values(id=row, status='N',
                                                    disabled='N'))
         self.manager = FakeManager()
-        self.scheduler = schedulers.JobScheduler(self.manager)
+        self.workflows = FakeWorkflows()
+        self.scheduler = schedulers.JobScheduler(self.manager,
+                                                 self.workflows)
         self.scheduler.lease._table = lease_table
 
     def tearDown(self):
@@ -289,6 +309,115 @@ class FireTests(SchedulerCase):
         self.assertEqual(schedulers.upcoming(3, job_name='nope'), [])
 
 
+class WorkflowFireTests(SchedulerCase):
+    def setUp(self):
+        super().setUp()
+        self.now = dt.datetime.now().replace(microsecond=0)
+
+    def test_only_workflows_that_are_on_and_scheduled_are_loaded(self):
+        on = workflow('on')
+        workflow('off', status='N')
+        workflow('plain', schedule=None)
+        self.lead()
+        self.assertEqual(list(self.scheduler.workflow_schedule),
+                         [on['workflow_id']])
+        self.assertEqual(self.scheduler.schedule, {})
+        self.assertEqual(self.scheduler.status()['scheduled_workflows'], 1)
+
+    def test_a_workflow_fires_through_its_own_manager(self):
+        workflow()
+        self.lead()
+        self.scheduler.cursor = self.now - dt.timedelta(seconds=3)
+        self.scheduler._fire()
+        self.assertGreaterEqual(len(self.workflows.submitted), 3)
+        self.assertEqual(self.manager.submitted, [])
+        self.assertTrue(all(item[:2] == ('flow', 'schedule')
+                            for item in self.workflows.submitted))
+        moments = [item[2] for item in self.workflows.submitted]
+        self.assertEqual(moments, sorted(moments))
+
+    def test_jobs_and_workflows_fire_in_order_of_time_each_to_its_manager(self):
+        job('j')
+        workflow('w')
+        self.lead()
+        self.scheduler.cursor = self.now - dt.timedelta(seconds=2)
+        self.scheduler._fire()
+        self.assertTrue(self.manager.submitted)
+        self.assertTrue(self.workflows.submitted)
+        self.assertTrue(all(item[0] == 'j' for item in self.manager.submitted))
+
+    def test_a_late_fire_of_a_workflow_is_recorded_as_missed(self):
+        saved = workflow(schedule=EVERY_MINUTE)
+        self.lead()
+        self.scheduler.cursor = self.now - dt.timedelta(minutes=5)
+        self.scheduler._fire()
+        missed = [item for item in self.events()
+                  if item['event_type'] == 'MISSED']
+        self.assertGreaterEqual(len(missed), 3)
+        for item in missed:
+            self.assertEqual((item['workflow_id'], item['job_id']),
+                             (saved['workflow_id'], None))
+        self.assertEqual(len(self.workflows.submitted) + len(missed), 5)
+
+    def test_a_workflow_that_can_not_be_started_is_recorded_as_failed(self):
+        saved = workflow()
+        self.lead()
+        self.scheduler.cursor = self.now - dt.timedelta(seconds=2)
+        self.workflows.fail = store.StoreError('Workflow flow has no steps.',
+                                               409)
+        self.scheduler._fire()
+        failed = [item for item in self.events()
+                  if item['event_type'] == 'FAILED']
+        self.assertGreaterEqual(len(failed), 2)
+        self.assertEqual(failed[0]['workflow_id'], saved['workflow_id'])
+        self.assertEqual(failed[0]['message'], 'Workflow flow has no steps.')
+
+    def test_downtime_of_the_workflows_is_recorded_too(self):
+        saved = workflow(schedule=EVERY_MINUTE)
+        job('j', schedule=EVERY_MINUTE)
+        self.scheduler._record_missed(self.now - dt.timedelta(minutes=10),
+                                      self.now)
+        missed = [item for item in self.events()
+                  if item['event_type'] == 'MISSED']
+        mine = [item for item in missed
+                if item['workflow_id'] == saved['workflow_id']]
+        self.assertGreaterEqual(len(mine), 9)
+        self.assertGreaterEqual(len(missed), 18)
+
+    def test_a_change_of_a_workflow_is_seen_by_the_signature(self):
+        workflow()
+        first = self.scheduler._signature()
+        workflow_store.set_status('flow', False)
+        self.assertNotEqual(first, self.scheduler._signature())
+
+    def test_the_next_wake_counts_the_workflows(self):
+        workflow('often', schedule=EVERY_SECOND)
+        self.lead()
+        self.scheduler.cursor = self.now
+        self.assertLessEqual(self.scheduler._delay(), 1.5)
+
+    def test_upcoming_fires_of_the_workflows_that_are_on(self):
+        workflow('hourly', schedule='{"min": "0", "sec": "0"}')
+        workflow('off', schedule='{"min": "0", "sec": "0"}', status='N')
+        fires = schedulers.upcoming_workflows(hours=3)
+        self.assertEqual({name for _, name in fires}, {'hourly'})
+        self.assertIn(len(fires), (3, 4))
+        self.assertEqual(schedulers.upcoming_workflows(3, 'nope'), [])
+
+    def test_the_tables_of_the_workflows_may_be_missing(self):
+        job('j')
+        workflow_store.metadata.drop_all(db.engine, tables=[
+            workflow_store.log_table, workflow_store.step_table,
+            workflow_store.run_table, workflow_store.version_table,
+            workflow_store.workflow_table])
+        self.lead()
+        self.assertEqual(self.scheduler.workflow_schedule, {})
+        self.assertEqual(len(self.scheduler.schedule), 1)
+        self.assertEqual(schedulers.upcoming_workflows(3), [])
+        self.scheduler._clean()
+        workflow_store.metadata.create_all(db.engine)
+
+
 class MaintenanceTests(SchedulerCase):
     def test_old_runs_and_events_are_deleted(self):
         saved = job()
@@ -300,9 +429,14 @@ class MaintenanceTests(SchedulerCase):
         db.execute(store.event_table.update().where(
             store.event_table.c.event_id == event).values(
             event_time=store.now() - old))
+        saved_workflow = workflow()
+        old_run = workflow_store.add_run(saved_workflow, store.SCHEDULE)
+        workflow_store.update_run(old_run, status=store.DONE,
+                                  queued_time=store.now() - old)
         self.scheduler._clean()
         self.assertEqual(store.read_runs(), [])
         self.assertEqual(store.read_events(), [])
+        self.assertEqual(workflow_store.read_runs(), [])
 
     def test_the_maintenance_runs_at_its_time_only(self):
         self.lead()

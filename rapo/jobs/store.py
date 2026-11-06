@@ -458,6 +458,13 @@ def read_run(run_id):
     return row
 
 
+def read_run_header(run_id):
+    """Get a run without its log, None when there is none; for what polls a
+    run until it ends."""
+    return _execute(sa.select(run_table).where(
+        run_table.c.run_id == run_id), as_dict=True)
+
+
 def read_last_runs():
     """Get {job_id: last run} of every job that ran."""
     inner = sa.select(sa.func.max(run_table.c.run_id)).group_by(

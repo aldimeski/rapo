@@ -54,13 +54,13 @@ DESCRIPTIONS = {
         'operate': 'See the Scheduler page; stop and start the scheduler for '
                    'every server'},
     'jobs': {
-        'view': 'See the jobs, their runs and logs, the upcoming fires and '
-                'the job scheduler',
-        'operate': 'See the jobs; run a job now, cancel a run, switch a job '
-                   'on or off, stop and start the job scheduler',
-        'edit': 'See and run the jobs; create, change and delete jobs, which '
-                'run programs and scripts as the user rapo runs as (a job '
-                'with SQL in it also needs Free SQL)'},
+        'view': 'See the jobs and the workflows, their runs and logs, the '
+                'upcoming fires and the job scheduler',
+        'operate': 'See the jobs and workflows; run one now, cancel a run, '
+                   'switch one on or off, stop and start the job scheduler',
+        'edit': 'See and run the jobs and workflows; create, change and '
+                'delete them. Jobs run programs and scripts as the user rapo '
+                'runs as (a job with SQL in it also needs Free SQL)'},
     'datasources': {
         'view': 'See the PDI Core datasources, their directories, waiting '
                 'files, archive and ASN.1 grammars',
@@ -182,13 +182,18 @@ ROUTES = {
               'get-job-run', 'get-job-versions', 'job-scheduler-status',
               'job-scheduler-upcoming', 'job-scheduler-events',
               'get-job-transfer-params', 'get-job-transfer-catalogue',
-              'get-job-transfer'),
+              'get-job-transfer', 'get-workflows', 'get-workflow',
+              'get-workflow-runs', 'get-workflow-run',
+              'get-workflow-versions'),
     **_routes('jobs', 'operate',
               'run-job', 'cancel-job-run', 'set-job-status',
+              'run-workflow', 'cancel-workflow-run', 'set-workflow-status',
               'job-scheduler-stop', 'job-scheduler-start'),
     **_routes('jobs', 'edit',
               'save-job', 'delete-job', 'save-job-schedule', 'check-job',
-              'validate-job-transfer', 'save-job-transfer'),
+              'validate-job-transfer', 'save-job-transfer',
+              'save-workflow', 'delete-workflow', 'save-workflow-schedule',
+              'check-workflow'),
     **_routes('datasources', 'view',
               'get-ds-list', 'get-ds-status', 'get-ds-config',
               'check-ds-directories', 'count-ds-file-log', 'get-ds-files',
