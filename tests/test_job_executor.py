@@ -334,6 +334,28 @@ class ConditionTests(ExecutorCase):
         self.assertEqual((not_met['status'], not_met['condition_value']),
                          ('C', '2'))
 
+    def test_run_status_says_why_it_is_not_met(self):
+        condition = {'kind': 'RUN_STATUS', 'targets': [
+            {'type': 'job', 'name': 'prep', 'window': {'kind': 'today'}}]}
+        seen = []
+
+        def fake(value, owner, now):
+            seen.append(owner)
+            return False, 'the job prep has not run today'
+        original = executor.dependencies.check
+        executor.dependencies.check = fake
+        try:
+            outcome = self.stage(condition)
+        finally:
+            executor.dependencies.check = original
+        self.assertEqual((outcome['status'], outcome['stage']),
+                         ('C', 'CONDITION'))
+        self.assertEqual(outcome['message'], 'The condition was not met: '
+                         'the job prep has not run today.')
+        self.assertEqual(outcome['condition_value'],
+                         'the job prep has not run today')
+        self.assertEqual(seen[0][0], 'job')
+
     def test_a_file_that_should_be_missing(self):
         path = os.path.join(self.folder, 'lock')
         condition = {'kind': 'FILE_EXISTS', 'path': path, 'exists': False}

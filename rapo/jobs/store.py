@@ -17,6 +17,7 @@ from ..core import schedule as core_schedule
 from ..database import db, CLIENT
 from ..logger import logger
 
+from . import catalogue
 from . import definition as definitions
 
 NAME_PATTERN = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$')
@@ -183,6 +184,32 @@ def read_jobs():
     return _execute(statement, as_table=True)
 
 
+def waits_for(condition):
+    """Get the targets a condition RUN_STATUS waits for ([] for any other
+    or none), as {type, name, window}."""
+    if isinstance(condition, dict) and condition.get('kind') == 'RUN_STATUS':
+        return [dict(target) for target in condition.get('targets') or []
+                if isinstance(target, dict)]
+    return []
+
+
+def read_waits_for():
+    """Get {job_id: [targets]} of the jobs whose condition waits for other
+    runs, for the list."""
+    rows = _execute(sa.select(job_table.c.job_id, job_table.c.definition),
+                    as_table=True)
+    found = {}
+    for row in rows:
+        try:
+            targets = waits_for(json.loads(_text(row['definition']))
+                                .get('condition'))
+        except ValueError:
+            continue
+        if targets:
+            found[row['job_id']] = targets
+    return found
+
+
 def read_job(name):
     """Get the job with its definition (JSON text), None when there is
     none."""
@@ -295,6 +322,8 @@ def save_job(name, definition, description=KEEP, notify_email=KEEP,
     or the schedule makes a new version. Returns the saved job.
     """
     name = check_name(name)
+    # The job may not wait for itself.
+    ctx = dict(ctx or catalogue.context(), owner=('job', name))
     try:
         checked = definitions.check(definition, ctx)
     except definitions.DefinitionError as error:
@@ -428,11 +457,14 @@ def has_active(job_id):
     return bool(count)
 
 
-def read_runs(job_id=None, limit=100):
-    """Get the runs, latest first."""
+def read_runs(job_id=None, limit=100, hide_unmet=False):
+    """Get the runs, latest first; `hide_unmet` leaves out the ones canceled
+    by a condition that was not met."""
     statement = sa.select(run_table).order_by(run_table.c.run_id.desc())
     if job_id is not None:
         statement = statement.where(run_table.c.job_id == job_id)
+    if hide_unmet:
+        statement = statement.where(sa.not_(_is_unmet(run_table)))
     return _execute(statement.limit(limit), as_table=True)
 
 
@@ -465,10 +497,46 @@ def read_run_header(run_id):
         run_table.c.run_id == run_id), as_dict=True)
 
 
+def _is_unmet(table):
+    """The runs that were canceled by a condition that was not met: they are
+    not real runs, the lists show the last real one."""
+    return sa.and_(table.c.status == CANCELED,
+                   sa.func.coalesce(table.c.stage, '') == 'CONDITION')
+
+
+def _read_unmet(table, key, is_unmet):
+    """Get {id: {'count', 'last'}} of the runs that were stopped by a
+    condition after the last real run of each job or workflow."""
+    other = table.alias('real_run')
+    real = sa.select(sa.func.max(other.c.run_id)).where(
+        other.c[key] == table.c[key],
+        sa.not_(is_unmet(other))).scalar_subquery()
+    rows = _execute(sa.select(
+        table.c[key].label('owner'), table.c.run_id,
+        table.c.end_time).where(
+        is_unmet(table), table.c.run_id > sa.func.coalesce(real, 0)),
+        as_table=True)
+    found = {}
+    for row in rows:
+        item = found.setdefault(row['owner'], {'count': 0, 'last': None})
+        item['count'] += 1
+        moment = row['end_time']
+        if moment and (item['last'] is None or moment > item['last']):
+            item['last'] = moment
+    return found
+
+
+def read_unmet():
+    """Get {job_id: {'count', 'last'}}: how many times the condition of a job
+    was not met since its last real run, and when it last was not."""
+    return _read_unmet(run_table, 'job_id', _is_unmet)
+
+
 def read_last_runs():
-    """Get {job_id: last run} of every job that ran."""
-    inner = sa.select(sa.func.max(run_table.c.run_id)).group_by(
-        run_table.c.job_id)
+    """Get {job_id: last real run} of every job that ran. A run that a
+    condition that was not met canceled is not a real one (`read_unmet`)."""
+    inner = sa.select(sa.func.max(run_table.c.run_id)).where(
+        sa.not_(_is_unmet(run_table))).group_by(run_table.c.job_id)
     rows = _execute(sa.select(run_table).where(
         run_table.c.run_id.in_(inner)), as_table=True)
     return {row['job_id']: row for row in rows}

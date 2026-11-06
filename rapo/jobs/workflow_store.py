@@ -117,10 +117,13 @@ def read_workflows():
         workflow_table.c.workflow_name), as_table=True)
     for row in rows:
         try:
-            steps = workflows.job_names(json.loads(_text(row['definition'])))
+            definition = json.loads(_text(row['definition']))
+            steps = workflows.job_names(definition)
+            targets = store.waits_for(definition.get('condition'))
         except ValueError:
-            steps = []
+            steps, targets = [], []
         row['steps'] = steps
+        row['waits_for'] = targets
         del row['definition']
     return rows
 
@@ -212,7 +215,7 @@ def save_workflow(name, definition, description=KEEP, notify_email=KEEP,
     name = store.check_name(name)
     try:
         checked = workflows.check(
-            definition, known_jobs() if jobs is None else jobs)
+            definition, known_jobs() if jobs is None else jobs, name)
     except definitions.DefinitionError as error:
         raise StoreError(' '.join(error.problems), 422)
     text = definitions.dumps(checked)
@@ -437,11 +440,14 @@ def read_steps(run_id):
         as_table=True)
 
 
-def read_runs(workflow_id=None, limit=100):
-    """Get the runs, latest first."""
+def read_runs(workflow_id=None, limit=100, hide_unmet=False):
+    """Get the runs, latest first; `hide_unmet` leaves out the ones the
+    condition of the workflow stopped."""
     statement = sa.select(run_table).order_by(run_table.c.run_id.desc())
     if workflow_id is not None:
         statement = statement.where(run_table.c.workflow_id == workflow_id)
+    if hide_unmet:
+        statement = statement.where(sa.not_(_is_unmet(run_table)))
     return _execute(statement.limit(limit), as_table=True)
 
 
@@ -465,10 +471,28 @@ def read_run(run_id):
     return row
 
 
+# What the message of a run stopped by the condition of the workflow starts as.
+UNMET_PREFIX = 'Stopped at the start of the workflow'
+
+
+def _is_unmet(table):
+    """The runs the condition of the workflow stopped: not real runs, the
+    lists show the last real one."""
+    return sa.and_(table.c.status == store.CANCELED,
+                   sa.func.coalesce(table.c.message, '').like(
+                       UNMET_PREFIX + '%'))
+
+
+def read_unmet():
+    """Get {workflow_id: {'count', 'last'}}: how many times the condition
+    of a workflow stopped it since its last real run, and when last."""
+    return store._read_unmet(run_table, 'workflow_id', _is_unmet)
+
+
 def read_last_runs():
-    """Get {workflow_id: last run} of every workflow that ran."""
-    inner = sa.select(sa.func.max(run_table.c.run_id)).group_by(
-        run_table.c.workflow_id)
+    """Get {workflow_id: last real run} of every workflow that ran."""
+    inner = sa.select(sa.func.max(run_table.c.run_id)).where(
+        sa.not_(_is_unmet(run_table))).group_by(run_table.c.workflow_id)
     rows = _execute(sa.select(run_table).where(
         run_table.c.run_id.in_(inner)), as_table=True)
     return {row['workflow_id']: row for row in rows}

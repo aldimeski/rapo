@@ -47,6 +47,21 @@ CONDITION_KINDS = {
     'FILE_EXISTS': 'A file or folder exists (or does not)',
     'FILE_COUNT': 'The number of files of a folder matching a mask is '
                   'within limits',
+    'RUN_STATUS': 'Another run (a control, a transfer, a job or a workflow) '
+                  'has ended well',
+}
+# The kinds a workflow may have at its start: the ones that need no process,
+# as the workflow is run by a thread of the server.
+WORKFLOW_CONDITION_KINDS = ('RUN_STATUS', 'FILE_EXISTS', 'FILE_COUNT')
+
+# What a RUN_STATUS condition can look at, and the windows of a target.
+TARGET_TYPES = ('control', 'transfer', 'job', 'workflow')
+TARGET_WINDOWS = {
+    'today': 'It ended today',
+    'hours': 'It ended in the last N hours',
+    'since_last_run': 'It ended after the last successful run of this job '
+                      'or workflow',
+    'data_date': 'Its data is of a day (a control only)',
 }
 # Types that may be the task of an EXIT_CODE condition.
 EXIT_CODE_TYPES = ('EXECUTABLE', 'COMMAND', 'PYTHON', 'PERL', 'SHELL',
@@ -161,6 +176,10 @@ def describe(system=None):
     return {'platform': ctx['platform'], 'types': types,
             'condition_kinds': [{'kind': key, 'description': text}
                                 for key, text in CONDITION_KINDS.items()],
+            'workflow_condition_kinds': list(WORKFLOW_CONDITION_KINDS),
+            'target_types': list(TARGET_TYPES),
+            'windows': [{'kind': key, 'description': text}
+                        for key, text in TARGET_WINDOWS.items()],
             'overlaps': list(OVERLAPS),
             'allowed_dirs': ctx['allowed_dirs'],
             'timeout': options.get('JOBS', 'timeout')}

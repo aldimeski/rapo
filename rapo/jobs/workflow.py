@@ -13,7 +13,8 @@ from . import catalogue
 from . import definition as definitions
 
 VERSION = 1
-KEYS = {'version', 'steps', 'parameters', 'timeout', 'overlap'}
+KEYS = {'version', 'steps', 'parameters', 'timeout', 'overlap',
+        'condition'}
 JOB_NAME = re.compile(r'^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$')
 
 
@@ -31,6 +32,11 @@ def normalize(definition):
     definition.setdefault('parameters', [])
     definition.setdefault('timeout', None)
     definition.setdefault('overlap', 'skip')
+    definition.setdefault('condition', None)
+    if isinstance(definition.get('condition'), dict) and isinstance(
+            definition['condition'].get('kind'), str):
+        definition['condition']['kind'] = \
+            definition['condition']['kind'].strip().upper()
     if isinstance(definition['steps'], list):
         definition['steps'] = [{'job': step} if isinstance(step, str)
                                else step for step in definition['steps']]
@@ -60,10 +66,11 @@ def _steps_text(numbers):
         f' and {numbers[-1]}'
 
 
-def validate(definition, known_jobs=None):
+def validate(definition, known_jobs=None, owner=None):
     """Get the list of problems of a normalized definition, empty when it
     can be saved. `known_jobs` is the set of names of the jobs that exist;
-    without it the names are not looked up."""
+    without it the names are not looked up. `owner` is the name of the
+    workflow, which a condition may not wait for."""
     problems = []
     unknown = sorted(set(definition) - KEYS)
     if unknown:
@@ -97,6 +104,12 @@ def validate(definition, known_jobs=None):
                             f'{_steps_text(numbers)}: a job can be in a '
                             'workflow once.')
     definitions._check_parameters(definition.get('parameters'), problems)
+    if definition.get('condition') is not None:
+        definitions.check_condition(
+            definition['condition'],
+            {'owner': ('workflow', owner)} if owner else {}, problems,
+            kinds=catalogue.WORKFLOW_CONDITION_KINDS,
+            label='Condition of the workflow')
     timeout = definition.get('timeout')
     if timeout is not None and (isinstance(timeout, bool)
                                 or not isinstance(timeout, int)
@@ -107,11 +120,11 @@ def validate(definition, known_jobs=None):
     return problems
 
 
-def check(definition, known_jobs=None):
+def check(definition, known_jobs=None, owner=None):
     """Get the normalized definition, raising WorkflowError with every
     problem found."""
     definition = normalize(definition)
-    problems = validate(definition, known_jobs)
+    problems = validate(definition, known_jobs, owner)
     if problems:
         raise WorkflowError(problems)
     return definition

@@ -65,6 +65,10 @@
               <router-link :to="{ name: 'edit-job', params: { name: row.job_name } }" class="job-link text-weight-bold" :class="row.status === 'N' ? 'text-grey-7' : 'text-blue-grey-9'">{{ row.job_name }}</router-link>
               <q-chip v-if="row.status === 'N'" dense color="grey-6" text-color="white" class="q-ml-sm">Off</q-chip>
               <div v-if="row.description" class="text-grey-7 text-caption">{{ row.description }}</div>
+<div v-if="row.waits_for && row.waits_for.length" class="text-grey-7 text-caption">
+                <q-icon name="fas fa-hourglass-half" size="10px" class="q-mr-xs" />Waits for {{ row.waits_for.map((target) => `${target.type} ${target.name}`).join(", ") }}
+                <q-tooltip><div v-for="target in row.waits_for" :key="target.type + target.name">{{ targetText(target) }}</div></q-tooltip>
+              </div>
               <div v-if="row.workflows && row.workflows.length" class="text-grey-7 text-caption">
                 <q-icon name="fas fa-stream" size="10px" class="q-mr-xs" />In {{ row.workflows.length === 1 ? "workflow" : "workflows" }} {{ row.workflows.join(", ") }}
               </div>
@@ -98,6 +102,9 @@
                 </div>
               </template>
               <span v-else class="text-grey-6">never</span>
+              <div v-if="row.unmet" class="text-caption text-amber-9">
+                <q-icon name="fas fa-exclamation-triangle" size="10px" class="q-mr-xs" />condition not met at {{ shortTime(row.unmet.last) }}<template v-if="row.unmet.count > 1"> ({{ row.unmet.count }} times since)</template>
+              </div>
             </td>
             <td class="text-no-wrap text-right">
               <q-btn v-if="row.running" aria-label="Cancel run" size="sm" color="grey-7" round flat icon="fas fa-times" :disable="!$can('jobs', 'operate')" @click="cancelRun(row)">
@@ -161,7 +168,8 @@ import { JOB_STAGES, jobType, runStatus } from "../constants";
 import { liveRefetch } from "../socket";
 import { fillViewportToBottom } from "../utils/layout";
 import { describeSchedule } from "../utils/schedule";
-import { escapeHtml, toMillis } from "../utils/format";
+import { escapeHtml, toDateTimeString, toMillis } from "../utils/format";
+import { targetText } from "../utils/job";
 
 // A run that waits or runs is shown here within this many seconds, whatever the live updates say.
 const REFRESH_SECONDS = 10;
@@ -243,6 +251,12 @@ export default {
     },
   },
   methods: {
+    // "07:10" for a moment of today, else the date and the time.
+    shortTime(value) {
+      const text = toDateTimeString(value);
+      return text.startsWith(new Date().toLocaleDateString("sv-SE")) ? text.substring(11, 16) : text.substring(0, 16);
+    },
+    targetText,
     ...mapActions(["updateJobSchedulerStatus"]),
     fillViewportToBottom,
     jobType,

@@ -3,10 +3,11 @@
 // In the form the steps are the names of the jobs, in order; the definition has them as objects ({job}), so that a
 // step can get settings later. Parameters are those of a job (utils/job.js).
 
-import { MASK } from "./job";
+import { MASK, conditionToForm, emptyCondition, formToCondition, targetProblems } from "./job";
 
+// `condition` carries `on`, the switch, as in a job.
 export function emptyWorkflowForm() {
-  return { steps: [], parameters: [], timeout: null, overlap: "skip" };
+  return { steps: [], parameters: [], timeout: null, overlap: "skip", condition: { on: false, ...emptyCondition(), kind: "RUN_STATUS" } };
 }
 
 export function definitionToForm(definition) {
@@ -15,6 +16,9 @@ export function definitionToForm(definition) {
   form.parameters = (definition.parameters || []).map((item) => ({ name: item.name, value: item.value || "", secret: Boolean(item.secret) }));
   form.timeout = definition.timeout ?? null;
   form.overlap = definition.overlap || "skip";
+  if (definition.condition) {
+    form.condition = { on: true, ...conditionToForm(definition.condition) };
+  }
   return form;
 }
 
@@ -25,6 +29,9 @@ export function formToDefinition(form) {
     definition.timeout = Number(form.timeout);
   }
   definition.overlap = form.overlap;
+  if (form.condition.on) {
+    definition.condition = formToCondition(form.condition);
+  }
   return definition;
 }
 
@@ -50,6 +57,9 @@ export function formProblems(form) {
   }
   for (const [job, numbers] of Object.entries(repeatedJobs(form.steps))) {
     problems.push(`The job ${job} is repeated, at ${stepsText(numbers)}: a job can be in a workflow once.`);
+  }
+  if (form.condition.on && form.condition.kind === "RUN_STATUS") {
+    problems.push(...targetProblems(form.condition.targets, "Condition of the workflow"));
   }
   const names = form.parameters.map((item) => item.name.trim()).filter(Boolean);
   const twice = names.find((name, index) => names.indexOf(name) !== index);

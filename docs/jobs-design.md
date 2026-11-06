@@ -405,3 +405,76 @@ recorded and shown as waiting (`I`). The code: `rapo/jobs/workflow.py` (definiti
 3. API and access.
 4. UI.
 5. Docs, CHANGELOG, `v0.10.0`.
+
+## 12. Dependencies (0.11.0)
+
+Requirement: `documents/RAJO.txt`, second phase. A **dependency** is a condition of a job, or of a whole workflow at its
+start, that says another run has to have ended well: a control, a transfer, a job or a workflow. It is a new condition kind,
+`RUN_STATUS`, and follows the rules of every condition: when it is not met the run is **canceled at once** (no waiting), with
+the reason in its message; inside a workflow that cancels the workflow. No schema change: the condition is part of the JSON
+definition.
+
+### 12.1 The condition
+
+```json
+{"kind": "RUN_STATUS", "targets": [
+  {"type": "control",  "name": "DEMO_BILLING", "window": {"kind": "data_date", "days_ago": 1}},
+  {"type": "transfer", "name": "daily-report", "window": {"kind": "today"}},
+  {"type": "job",      "name": "load",         "window": {"kind": "hours", "hours": 6}},
+  {"type": "workflow", "name": "nightly",      "window": {"kind": "since_last_run"}}]}
+```
+
+* **Targets**: a list, **all must be met**; at least one; none twice; never the job or the workflow that owns the condition. The
+  window is **per target**.
+* **Windows** (the end of a run is what is looked at, except in `data_date`):
+
+| Window | A run counts when | Targets |
+|---|---|---|
+| `today` | it ended since midnight of today (server time) | all |
+| `hours` (N, 1-720) | it ended in the last N hours | all |
+| `since_last_run` | it ended after the last **successful** run of the job or workflow that owns the condition; when it has none, after the moment it was **created** | all |
+| `data_date` (`days_ago`, 0-31) | the day of its `date_from` ("run from") is the day that many days ago: 0 today, 1 yesterday. The window `date_to` is not looked at | **controls only** |
+
+* **Met** when the **last finished** run that counts is **Done**. When the target has a run that is still going (waiting,
+  started, running) it is **not met**: it is not over. Not met too when no run counts, or the last one that counts ended in
+  an error or was canceled; the message says which. For `data_date` the last finished run for that day is meant, whenever it
+  ended. A control is Done in status `D`, a transfer when the whole transfer was done without a failed file, as its status says.
+* The reason is in the message of the run: "The condition was not met: control DEMO_BILLING has no run for 2026-11-05 (its last
+  run was for 2026-11-04 and is done); transfer daily-report is still running". It is also in the log of the run.
+* A target that **does not exist** is an error, not "not met": the run ends as an error (with the failure mail). *Check* tells it
+  when the definition is saved (a save is not refused: a control may be made later). A transfer is read whether or not
+  `[TRANSFER] enabled` is on; when the transfer tables are missing that is an error that says so.
+* The condition is evaluated the same for a run by hand and one by the schedule.
+
+### 12.2 A workflow's condition
+
+A workflow may have a `condition` in its definition, evaluated **at its start**, before the first step: `RUN_STATUS`, `FILE_EXISTS`
+or `FILE_COUNT` (the ones that need no process: the workflow is run by a thread of the server). When it is not met no step is
+run: the workflow run is **canceled** (a warning, as when a step's condition is not met), all steps are skipped, the log says why,
+no mail. A condition that can not be evaluated is an error, with the mail. `since_last_run` there means the last successful run
+of the workflow.
+
+### 12.3 What the lists show
+
+A job or a workflow that is polled (scheduled every few minutes, with `since_last_run`) would end almost every run canceled
+because its condition was not met. The lists therefore show as the **last run** the last one that really ran, with a note
+"condition not met at 07:10 (12 times since)" when there are such runs after it, and the history can hide them (`hide_unmet`).
+Such runs are still recorded and still deleted by the retention.
+
+### 12.4 Built (0.11.0)
+
+Where the built version is more exact than the text above: the transfer and job windows read `rapo_transfer_run` and
+`rapo_job_run`, the workflow `rapo_workflow_run`, a control `rapo_log` joined by name to `rapo_config`; the reason is told for
+every target that is not met, joined by `;`. A run is *unmet* when it is `C` at the stage `CONDITION` (a job) or its message
+starts "Stopped at the start of the workflow" (a workflow); a workflow stopped at a **step** by the condition of that job
+still counts as a real run. `get-dependency-targets` serves the editor; `check-job` and `check-workflow` take the name of the
+owner and answer `missing`. The code: `rapo/jobs/dependencies.py`, `executor.evaluate_condition`, `workflow_manager._condition`,
+`store.read_unmet` and `read_waits_for`, and in the UI `ConditionEditor.vue` and `RunStatusEditor.vue`.
+
+### 12.5 Order of the work
+
+1. This design, the definition and its checks (jobs and workflows), the reading of the statuses (`rapo/jobs/dependencies.py`).
+2. The run of the job (the reason in the message), the start of the workflow, the lists.
+3. API: the names of the targets, `check-job` and `check-workflow` find missing ones, `hide_unmet`.
+4. UI: the condition editor shared by the job and the workflow, the Condition tab of a workflow, "waits for" in the lists.
+5. Docs, CHANGELOG, `v0.11.0` (no `upgrade.sql`).

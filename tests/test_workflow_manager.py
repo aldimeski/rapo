@@ -199,6 +199,46 @@ class FlowTests(WorkflowCase):
         self.assertEqual([item['event_type'] for item in store.read_events()
                           if item['workflow_id']], ['CANCELED'])
 
+    def test_the_condition_of_the_workflow_is_checked_before_the_first_step(
+            self):
+        self.job('prep')
+        self.job('load')
+        self.flow('load', condition={'kind': 'RUN_STATUS', 'targets': [
+            {'type': 'job', 'name': 'prep', 'window': {'kind': 'today'}}]})
+        row = self.finished(self.workflows.submit('nightly', 'schedule'))
+        self.assertEqual((row['status'], self.steps(row)),
+                         ('C', [(1, 'load', 'K')]))
+        self.assertTrue(row['message'].startswith(
+            'Stopped at the start of the workflow: The condition was not '
+            'met: the job prep has not run today'), row['message'])
+        self.assertEqual(self.mailer.sent, [])
+        self.assertEqual([line['level'] for line in row['lines']
+                          if line['level'] == 'WARNING'], ['WARNING'])
+        # Once prep is done, the workflow goes on.
+        prep = store.read_job('prep')
+        run_id = store.add_run(prep, store.MANUAL)
+        store.update_run(run_id, status=store.DONE, end_time=store.now())
+        row = self.finished(self.workflows.submit('nightly', 'schedule'))
+        self.assertEqual((row['status'], self.steps(row)),
+                         ('D', [(1, 'load', 'D')]), row['message'])
+
+    def test_a_workflow_condition_on_a_file(self):
+        self.job('load')
+        self.flow('load', condition={
+            'kind': 'FILE_EXISTS', 'path': os.path.join(os.getcwd(), 'no-such-file-xyz')})
+        row = self.finished(self.workflows.submit('nightly', 'schedule'))
+        self.assertEqual(row['status'], 'C')
+        self.assertTrue(row['message'].endswith('The condition was not met.'))
+
+    def test_a_condition_that_can_not_be_checked_is_an_error(self):
+        self.job('load')
+        self.flow('load', condition={'kind': 'RUN_STATUS', 'targets': [
+            {'type': 'control', 'name': 'nope',
+             'window': {'kind': 'today'}}]}, email='flow@x.com')
+        row = self.finished(self.workflows.submit('nightly', 'schedule'))
+        self.assertEqual(row['status'], 'E')
+        self.assertIn('could not be checked', row['message'])
+
     def test_a_job_that_is_off_still_runs_as_a_step(self):
         self.job('load')
         store.set_status('load', False)

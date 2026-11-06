@@ -30,6 +30,7 @@ from ..core.runner import get_runner_name
 from ..logger import logger
 
 from . import definition as definitions
+from . import executor
 from . import manager as job_managers
 from . import notify, store, workflow, workflow_store
 
@@ -301,6 +302,9 @@ class WorkflowManager:
                         f'({run.trigger}), {total} step'
                         f'{"" if total == 1 else "s"}')
         values, secrets = self._values(run)
+        stopped = self._condition(run, values, total)
+        if stopped:
+            return stopped
         timeout = run.definition.get('timeout')
         if timeout is None:
             timeout = int(setting('timeout') or 0)
@@ -322,6 +326,30 @@ class WorkflowManager:
         self._stop(run, store.DONE, f'Workflow {run.name} is done: {total} '
                                     f'step{"" if total == 1 else "s"}.',
                    'INFO', step_no=total, skip_from=total + 1)
+
+    def _condition(self, run, values, total):
+        """Check the condition of the workflow before its first step. Returns
+        the end of the run when it is not met (or can not be checked), else
+        None."""
+        condition = run.definition.get('condition')
+        if not condition:
+            return None
+        try:
+            met, value = executor.evaluate_condition(
+                condition, values, {}, None, None, None, None,
+                owner=('workflow', run.name))
+        except (executor.TaskFailed, definitions.DefinitionError) as error:
+            return self._stop(run, store.ERROR,
+                              f'The condition of the workflow could not be '
+                              f'checked: {error}', 'ERROR')
+        run.say('INFO', f'Condition {condition["kind"]}: {value}; '
+                        f'{"met" if met else "not met"}')
+        if met:
+            return None
+        detail = f': {value}.' if condition['kind'] == 'RUN_STATUS' else '.'
+        return self._stop(
+            run, store.CANCELED, f'Stopped at the start of the workflow: '
+            f'{CONDITION_NOT_MET}{detail}', 'WARNING', skip_from=1) or True
 
     def _wait_turn(self, run):
         """With the overlap `queue` wait until the earlier runs of the

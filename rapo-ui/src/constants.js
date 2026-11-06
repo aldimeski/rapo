@@ -175,7 +175,7 @@ export function jobType(type) {
 // A workflow run that was stopped because a step's condition was not met (or the step was canceled) ends canceled, and
 // is shown as a warning, not as a cancel by the user.
 export function workflowRunStatus(run) {
-  if (run && run.status === "C" && String(run.message || "").startsWith("Stopped at step")) {
+  if (run && run.status === "C" && String(run.message || "").startsWith("Stopped at ")) {
     return { label: "Stopped", icon: "fas fa-exclamation-triangle", color: "amber-8" };
   }
   return runStatus(run && run.status);

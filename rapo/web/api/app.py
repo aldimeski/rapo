@@ -50,6 +50,7 @@ from ...transfer import store as transfer_store
 from ...transfer.manager import manager as transfers
 from ...jobs import catalogue as job_catalogue
 from ...jobs import definition as job_definition
+from ...jobs import dependencies as job_dependencies
 from ...jobs import store as job_store
 from ...jobs.manager import manager as job_manager
 from ...jobs.workflow_manager import manager as workflow_manager
@@ -2802,6 +2803,8 @@ def get_jobs():
     fire and whether it is running or waiting, and the job manager."""
     rows = job_answer(job_store.read_jobs)
     last = job_answer(job_store.read_last_runs)
+    unmet = job_answer(job_store.read_unmet)
+    waits = job_answer(job_store.read_waits_for)
     fires = next_job_fires()
     in_workflows = jobs_in_workflows()
     jobs = []
@@ -2811,6 +2814,8 @@ def get_jobs():
             run and run['status'] in job_store.ACTIVE)
         item = present_job(row, run, fires.get(row['job_id']), running)
         item['workflows'] = in_workflows.get(row['job_name'], [])
+        item['unmet'] = unmet.get(row['job_id'])
+        item['waits_for'] = waits.get(row['job_id'], [])
         jobs.append(item)
     return {'jobs': jobs, 'manager': job_manager.status(),
             'scheduler': job_scheduler.status()['state']}
@@ -2827,6 +2832,7 @@ def get_job(name: str):
         last and last['status'] in job_store.ACTIVE)
     answer = present_job(row, last, fires.get(row['job_id']), running)
     answer['workflows'] = jobs_in_workflows().get(row['job_name'], [])
+    answer['unmet'] = job_answer(job_store.read_unmet).get(row['job_id'])
     return answer
 
 
@@ -2855,10 +2861,28 @@ def check_job(data: dict = fastapi.Body(...)):
         definition = job_definition.normalize(data.get('definition'))
     except job_definition.DefinitionError as error:
         return {'ok': False, 'problems': error.problems, 'definition': None}
-    problems = job_definition.validate(definition, check_paths=True)
+    name = str(data.get('name') or '').strip()
+    ctx = dict(job_catalogue.context(), owner=('job', name)) if name else None
+    problems = job_definition.validate(definition, ctx, check_paths=True)
     return {'ok': not problems, 'problems': problems,
+            'missing': job_dependencies.missing(definition.get('condition')),
             'job_type': job_definition.job_type(definition),
             'definition': job_definition.mask_secrets(definition)}
+
+
+@api.get('/get-dependency-targets', dependencies=JOBS)
+def get_dependency_targets(type: str):
+    """Get the names a condition *Run status* can wait for: the controls,
+    transfers, jobs or workflows (`type`: control, transfer, job or
+    workflow)."""
+    if type not in job_catalogue.TARGET_TYPES:
+        raise fastapi.HTTPException(
+            status_code=422, detail='type is one of '
+            + ', '.join(job_catalogue.TARGET_TYPES))
+    try:
+        return {'type': type, 'names': job_dependencies.names(type)}
+    except job_dependencies.DependencyError as error:
+        raise fastapi.HTTPException(status_code=503, detail=str(error))
 
 
 @api.post('/save-job', dependencies=JOBS)
@@ -2976,11 +3000,13 @@ def cancel_job_run(run_id: int):
 
 @api.get('/get-job-runs', dependencies=JOBS)
 def get_job_runs(name: str | None = None,
-                 limit: int = fastapi.Query(100, ge=1, le=1000)):
+                 limit: int = fastapi.Query(100, ge=1, le=1000),
+                 hide_unmet: bool = False):
     """Get the runs of a job, or of every job, latest first, without their
-    log."""
+    log. `hide_unmet` leaves out the runs that a condition that was not met
+    canceled."""
     job_id = job_answer(job_store.get_job, name)['job_id'] if name else None
-    return job_answer(job_store.read_runs, job_id, limit)
+    return job_answer(job_store.read_runs, job_id, limit, hide_unmet)
 
 
 @api.get('/get-job-run', dependencies=JOBS)
@@ -3183,12 +3209,16 @@ def get_workflows():
     waiting, and the workflow manager."""
     rows = job_answer(workflow_store.read_workflows)
     last = job_answer(workflow_store.read_last_runs)
+    unmet = job_answer(workflow_store.read_unmet)
     fires = next_workflow_fires()
-    return {'workflows': [
+    items = [
         present_workflow(row, last.get(row['workflow_id']),
                          fires.get(row['workflow_id']),
                          workflow_running(row, last.get(row['workflow_id'])))
-        for row in rows],
+        for row in rows]
+    for item in items:
+        item['unmet'] = unmet.get(item['workflow_id'])
+    return {'workflows': items,
         'manager': workflow_manager.status(),
         'scheduler': job_scheduler.status()['state']}
 
@@ -3203,6 +3233,8 @@ def get_workflow(name: str):
     answer = present_workflow(
         row, last, next_workflow_fires().get(row['workflow_id']),
         workflow_running(row, last))
+    answer['unmet'] = job_answer(workflow_store.read_unmet).get(
+        row['workflow_id'])
     known = {item['job_name']: item['status']
              for item in job_answer(job_store.read_jobs)}
     answer['jobs'] = [{'job_name': item, 'exists': item in known,
@@ -3221,9 +3253,11 @@ def check_workflow(data: dict = fastapi.Body(...)):
         definition = job_workflow.normalize(data.get('definition'))
     except job_definition.DefinitionError as error:
         return {'ok': False, 'problems': error.problems, 'definition': None}
+    name = str(data.get('name') or '').strip() or None
     problems = job_workflow.validate(
-        definition, job_answer(workflow_store.known_jobs))
+        definition, job_answer(workflow_store.known_jobs), name)
     return {'ok': not problems, 'problems': problems,
+            'missing': job_dependencies.missing(definition.get('condition')),
             'definition': job_definition.mask_secrets(definition)}
 
 
@@ -3327,12 +3361,15 @@ def cancel_workflow_run(run_id: int):
 
 @api.get('/get-workflow-runs', dependencies=JOBS)
 def get_workflow_runs(name: str | None = None,
-                      limit: int = fastapi.Query(100, ge=1, le=1000)):
+                      limit: int = fastapi.Query(100, ge=1, le=1000),
+                      hide_unmet: bool = False):
     """Get the runs of a workflow, or of every workflow, latest first,
-    without their steps and log."""
+    without their steps and log. `hide_unmet` leaves out the runs that the
+    condition of the workflow stopped."""
     workflow_id = job_answer(workflow_store.get_workflow, name)[
         'workflow_id'] if name else None
-    return job_answer(workflow_store.read_runs, workflow_id, limit)
+    return job_answer(workflow_store.read_runs, workflow_id, limit,
+                      hide_unmet)
 
 
 @api.get('/get-workflow-run', dependencies=JOBS)

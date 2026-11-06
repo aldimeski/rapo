@@ -184,7 +184,7 @@ ROUTES = {
               'get-job-transfer-params', 'get-job-transfer-catalogue',
               'get-job-transfer', 'get-workflows', 'get-workflow',
               'get-workflow-runs', 'get-workflow-run',
-              'get-workflow-versions'),
+              'get-workflow-versions', 'get-dependency-targets'),
     **_routes('jobs', 'operate',
               'run-job', 'cancel-job-run', 'set-job-status',
               'run-workflow', 'cancel-workflow-run', 'set-workflow-status',

@@ -18,7 +18,57 @@ export const CONDITION_KINDS = [
   { value: "EXIT_CODE", label: "Exit code", caption: "A program, command or script: met when it exits with 0" },
   { value: "FILE_EXISTS", label: "File exists", caption: "A file or folder exists, or does not" },
   { value: "FILE_COUNT", label: "Files in a folder", caption: "The number of files of a folder is within limits" },
+  { value: "RUN_STATUS", label: "Run status", caption: "Other runs (a control, a transfer, a job or a workflow) have ended well" },
 ];
+
+// The kinds a workflow may start with: the ones that need no process.
+export const WORKFLOW_CONDITION_KINDS = CONDITION_KINDS.filter((item) => ["RUN_STATUS", "FILE_EXISTS", "FILE_COUNT"].includes(item.value));
+
+// What a condition of kind RUN_STATUS can wait for, and the windows a wait can look at.
+export const TARGET_TYPES = [
+  { value: "control", label: "Control", icon: "fas fa-tasks" },
+  { value: "transfer", label: "Transfer", icon: "fas fa-exchange-alt" },
+  { value: "job", label: "Job", icon: "fas fa-cog" },
+  { value: "workflow", label: "Workflow", icon: "fas fa-project-diagram" },
+];
+export const TARGET_WINDOWS = [
+  { value: "today", label: "Ended today" },
+  { value: "hours", label: "Ended in the last hours" },
+  { value: "since_last_run", label: "Ended since the last successful run of this one" },
+  { value: "data_date", label: "Has the data of a day" },
+];
+
+export function emptyTarget(type = "control") {
+  return { type, name: "", window: "today", hours: 24, days_ago: 0 };
+}
+
+// A target as the definition has it: {type, name, window: {kind, hours | days_ago}}.
+export function targetToForm(target) {
+  const window = target.window || { kind: "today" };
+  return { type: target.type, name: target.name, window: window.kind, hours: window.hours ?? 24, days_ago: window.days_ago ?? 0 };
+}
+
+export function formToTarget(form) {
+  const window = { kind: form.window };
+  if (form.window === "hours") {
+    window.hours = Number(form.hours);
+  } else if (form.window === "data_date") {
+    window.days_ago = Number(form.days_ago);
+  }
+  return { type: form.type, name: String(form.name || "").trim(), window };
+}
+
+// Say in words what a target waits for ("control X: ended today"), for the lists.
+export function targetText(target) {
+  const window = target.window || { kind: "today" };
+  const text = {
+    today: "ended today",
+    hours: `ended in the last ${window.hours} hours`,
+    since_last_run: "ended since the last successful run",
+    data_date: window.days_ago ? `has the data of ${window.days_ago} day${window.days_ago === 1 ? "" : "s"} ago` : "has the data of today",
+  }[window.kind];
+  return `${target.type} ${target.name}: ${text}`;
+}
 
 // What the server sends instead of the value of a secret parameter.
 export const MASK = "********";
@@ -135,7 +185,7 @@ export function taskProblems(form, label) {
 }
 
 export function emptyCondition() {
-  return { kind: "SQL", text: "", task: emptyTask("COMMAND"), path: "", exists: true, directory: "", mask: "", min: null, max: null };
+  return { kind: "SQL", text: "", task: emptyTask("COMMAND"), path: "", exists: true, directory: "", mask: "", min: null, max: null, targets: [emptyTarget()] };
 }
 
 export function conditionToForm(condition) {
@@ -151,6 +201,9 @@ export function conditionToForm(condition) {
   form.mask = condition.mask || "";
   form.min = condition.min ?? null;
   form.max = condition.max ?? null;
+  if (condition.targets) {
+    form.targets = condition.targets.map(targetToForm);
+  }
   return form;
 }
 
@@ -160,6 +213,8 @@ export function formToCondition(form) {
     condition.text = form.text;
   } else if (form.kind === "EXIT_CODE") {
     condition.task = formToTask(form.task);
+  } else if (form.kind === "RUN_STATUS") {
+    condition.targets = form.targets.map(formToTarget);
   } else if (form.kind === "FILE_EXISTS") {
     condition.path = form.path.trim();
     condition.exists = form.exists;
@@ -229,6 +284,31 @@ export function formToDefinition(form) {
   return definition;
 }
 
+// What is wrong with the targets of a condition of kind RUN_STATUS that can be seen without the server.
+export function targetProblems(targets, label = "Condition") {
+  const problems = [];
+  if (!targets.length) {
+    problems.push(`${label}: give at least one target.`);
+  }
+  const seen = new Set();
+  targets.forEach((target, index) => {
+    const name = String(target.name || "").trim();
+    if (!name) {
+      problems.push(`${label}: target ${index + 1} has no name.`);
+    } else if (seen.has(`${target.type} ${name}`)) {
+      problems.push(`${label}: the ${target.type} ${name} is given twice.`);
+    }
+    seen.add(`${target.type} ${name}`);
+    if (target.window === "hours" && !(Number(target.hours) >= 1 && Number(target.hours) <= 720)) {
+      problems.push(`${label}: target ${index + 1}: hours is 1 to 720.`);
+    }
+    if (target.window === "data_date" && !(Number(target.days_ago) >= 0 && Number(target.days_ago) <= 31)) {
+      problems.push(`${label}: target ${index + 1}: days back is 0 to 31.`);
+    }
+  });
+  return problems;
+}
+
 // The problems of the form that can be seen without the server.
 export function formProblems(form) {
   const problems = [...taskProblems(form.main, "Main")];
@@ -240,6 +320,9 @@ export function formProblems(form) {
   }
   if (form.condition.on && form.condition.kind === "EXIT_CODE") {
     problems.push(...taskProblems(form.condition.task, "Condition"));
+  }
+  if (form.condition.on && form.condition.kind === "RUN_STATUS") {
+    problems.push(...targetProblems(form.condition.targets));
   }
   const names = form.parameters.map((item) => item.name.trim()).filter(Boolean);
   const twice = names.find((name, index) => names.indexOf(name) !== index);

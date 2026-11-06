@@ -48,6 +48,7 @@
           <div v-else>
             <div v-for="problem in checkResult.problems" :key="problem">{{ problem }}</div>
           </div>
+          <div v-for="problem in checkResult.missing || []" :key="problem" class="text-amber-10"><q-icon name="fas fa-exclamation-triangle" size="12px" class="q-mr-xs" />{{ problem }} It can still be saved, but the run would end as an error.</div>
           <template #action><q-btn flat dense no-caps label="Dismiss" @click="checkResult = null" /></template>
         </q-banner>
 
@@ -132,49 +133,15 @@
                 <div class="text-caption text-grey-7">
                   It is checked after the pre task. When it is not met the run ends as canceled, not as an error, and the main and post tasks do not run. An error while checking it is an error.
                 </div>
-                <template v-if="form.def.condition.on">
-                  <q-select v-model="form.def.condition.kind" outlined dense emit-value map-options :options="conditionKinds" label="Kind of condition" class="type-select">
-                    <template v-slot:option="{ itemProps, opt }">
-                      <q-item v-bind="itemProps">
-                        <q-item-section>
-                          <q-item-label>{{ opt.label }}</q-item-label>
-                          <q-item-label caption>{{ opt.caption }}</q-item-label>
-                        </q-item-section>
-                      </q-item>
-                    </template>
-                  </q-select>
-
-                  <template v-if="form.def.condition.kind === 'SQL'">
-                    <code-box v-model="form.def.condition.text" label="Query" :template-vars="conditionVariables" />
-                    <div class="text-caption text-grey-7">One SELECT (or WITH) query, read only. The condition is met when its first value is not empty and not 0, <code>N</code> or <code>false</code>.</div>
-                  </template>
-                  <job-task-editor
-                    v-else-if="form.def.condition.kind === 'EXIT_CODE'"
-                    v-model="form.def.condition.task"
-                    :catalogue="catalogue"
-                    :types="exitCodeTypes"
-                    :parameter-names="parameterNames" :job-name="form.name"
-                    type-label="Type of the program" />
-                  <template v-else-if="form.def.condition.kind === 'FILE_EXISTS'">
-                    <q-input v-model="form.def.condition.path" outlined dense label="File or folder" input-class="mono" hint="Date tokens like <YYYYMMDD> and {variables} are filled in" />
-                    <q-btn-toggle
-                      v-model="form.def.condition.exists"
-                      no-caps
-                      unelevated
-                      toggle-color="teal"
-                      color="white"
-                      text-color="blue-grey-8"
-                      :options="[{ label: 'It exists', value: true }, { label: 'It does not exist', value: false }]" />
-                  </template>
-                  <template v-else>
-                    <q-input v-model="form.def.condition.directory" outlined dense label="Folder" input-class="mono" hint="Date tokens like <YYYYMMDD> and {variables} are filled in" />
-                    <q-input v-model="form.def.condition.mask" outlined dense label="File mask" input-class="mono" hint="A regular expression matched against the file names; empty: every file" />
-                    <div class="row q-col-gutter-md">
-                      <div class="col-3"><q-input v-model.number="form.def.condition.min" outlined dense type="number" min="0" label="At least" clearable /></div>
-                      <div class="col-3"><q-input v-model.number="form.def.condition.max" outlined dense type="number" min="0" label="At most" clearable /></div>
-                    </div>
-                  </template>
-                </template>
+                <condition-editor
+                  v-if="form.def.condition.on"
+                  v-model="form.def.condition"
+                  :kinds="conditionKinds"
+                  :catalogue="catalogue"
+                  :variables="conditionVariables"
+                  :parameter-names="parameterNames"
+                  owner-type="job"
+                  :owner-name="form.name" />
               </div>
             </q-tab-panel>
 
@@ -275,8 +242,8 @@
 </template>
 
 <script>
-import CodeBox from "./CodeBox.vue";
 import EditorSkeleton from "./EditorSkeleton.vue";
+import ConditionEditor from "./ConditionEditor.vue";
 import JobTaskEditor from "./JobTaskEditor.vue";
 import LoadErrorNotice from "./LoadErrorNotice.vue";
 import ScheduleEditBox from "./ScheduleEditBox.vue";
@@ -301,7 +268,7 @@ function emptyForm(catalogue) {
 // changes, and Ctrl+S applies.
 export default {
   mixins: [editorGuard],
-  components: { CodeBox, EditorSkeleton, JobTaskEditor, LoadErrorNotice, ScheduleEditBox },
+  components: { ConditionEditor, EditorSkeleton, JobTaskEditor, LoadErrorNotice, ScheduleEditBox },
   // The code boxes of a token that may not edit jobs are read only.
   provide() {
     return { editorReadonly: () => !this.$can("jobs", "edit") };
@@ -549,8 +516,8 @@ export default {
       }
       this.checking = true;
       try {
-        const answer = await api("check-job", { method: "POST", body: { definition: formToDefinition(this.form.def) }, loadingBar: false });
-        this.checkResult = { ok: answer.ok, problems: answer.problems };
+        const answer = await api("check-job", { method: "POST", body: { name: this.form.name, definition: formToDefinition(this.form.def) }, loadingBar: false });
+        this.checkResult = { ok: answer.ok, problems: answer.problems, missing: answer.missing };
       } catch (error) {
         notifyError("The definition could not be checked.", error);
       } finally {

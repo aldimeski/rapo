@@ -24,6 +24,7 @@
         <q-tabs v-model="tab" class="text-white bg-blue-grey-7" active-color="light-blue-1" indicator-color="light-blue-1" align="left" inline-label narrow-indicator no-caps>
           <q-tab name="general" label="General" icon="fas fa-window-maximize" />
           <q-tab name="steps" :label="`Steps (${form.def.steps.length})`" icon="fas fa-list-ol" />
+          <q-tab name="condition" label="Condition" :icon="form.def.condition.on ? 'fas fa-check-circle' : 'fas fa-circle-notch'" />
           <q-tab name="schedule" label="Schedule" :icon="form.scheduleOn ? 'fas fa-clock' : 'fas fa-circle-notch'" />
           <q-tab v-if="!isNew" name="versions" :label="`Versions (${version})`" icon="fas fa-history" />
         </q-tabs>
@@ -41,10 +42,11 @@
 
         <q-banner v-if="checkResult" dense :class="checkResult.ok ? 'bg-green-1 text-green-10' : 'bg-red-1 text-red-10'">
           <template #avatar><q-icon :name="checkResult.ok ? 'fas fa-check-circle' : 'fas fa-exclamation-circle'" size="16px" :color="checkResult.ok ? 'green' : 'red'" /></template>
-          <div v-if="checkResult.ok">Fit to be saved: the steps, the jobs and the parameters were checked.</div>
+          <div v-if="checkResult.ok">Fit to be saved: the steps, the jobs, the condition and the parameters were checked.</div>
           <div v-else>
             <div v-for="problem in checkResult.problems" :key="problem">{{ problem }}</div>
           </div>
+          <div v-for="problem in checkResult.missing || []" :key="problem" class="text-amber-10"><q-icon name="fas fa-exclamation-triangle" size="12px" class="q-mr-xs" />{{ problem }} It can still be saved, but the run would end as an error.</div>
           <template #action><q-btn flat dense no-caps label="Dismiss" @click="checkResult = null" /></template>
         </q-banner>
 
@@ -171,6 +173,18 @@
               </div>
             </q-tab-panel>
 
+            <!-- Condition -->
+            <q-tab-panel name="condition">
+              <div class="q-ma-lg q-gutter-y-md panel-width">
+                <q-toggle v-model="form.def.condition.on" label="Start the workflow only when a condition is met" />
+                <div class="text-caption text-grey-7">
+                  It is checked once, before the first step. When it is not met the run ends as canceled, shown as a warning, with the reason in its message; no step runs and no mail is sent.
+                  The history can hide such runs, and the list says how many there were since the last real run.
+                </div>
+                <condition-editor v-if="form.def.condition.on" v-model="form.def.condition" :kinds="conditionKinds" :owner-type="'workflow'" :owner-name="form.name" />
+              </div>
+            </q-tab-panel>
+
             <!-- Schedule -->
             <q-tab-panel name="schedule">
               <div class="q-ma-lg q-gutter-y-md">
@@ -249,6 +263,7 @@
 </template>
 
 <script>
+import ConditionEditor from "./ConditionEditor.vue";
 import EditorSkeleton from "./EditorSkeleton.vue";
 import LoadErrorNotice from "./LoadErrorNotice.vue";
 import ScheduleEditBox from "./ScheduleEditBox.vue";
@@ -256,7 +271,7 @@ import { api, notifyError } from "../api";
 import { jobType } from "../constants";
 import editorGuard from "../mixins/editorGuard";
 import { toDateTimeString } from "../utils/format";
-import { MASK, OVERLAPS, scheduleToUnits } from "../utils/job";
+import { MASK, OVERLAPS, WORKFLOW_CONDITION_KINDS, scheduleToUnits } from "../utils/job";
 import { defaultSchedule, describeSchedule, parseSchedule, scheduleUnits } from "../utils/schedule";
 import { definitionToForm, emptyWorkflowForm, formProblems, formToDefinition, repeatedJobs } from "../utils/workflow";
 
@@ -271,7 +286,7 @@ function emptyForm() {
 // editors it keeps what was loaded to know what changed, asks before leaving unsaved changes, and Ctrl+S applies.
 export default {
   mixins: [editorGuard],
-  components: { EditorSkeleton, LoadErrorNotice, ScheduleEditBox },
+  components: { ConditionEditor, EditorSkeleton, LoadErrorNotice, ScheduleEditBox },
   props: ["name"],
   data() {
     return {
@@ -294,6 +309,7 @@ export default {
       checkResult: null,
       shown: {},
       overlaps: OVERLAPS,
+      conditionKinds: WORKFLOW_CONDITION_KINDS,
     };
   },
   computed: {
@@ -531,8 +547,8 @@ export default {
       }
       this.checking = true;
       try {
-        const answer = await api("check-workflow", { method: "POST", body: { definition: formToDefinition(this.form.def) }, loadingBar: false });
-        this.checkResult = { ok: answer.ok, problems: answer.problems };
+        const answer = await api("check-workflow", { method: "POST", body: { name: this.form.name, definition: formToDefinition(this.form.def) }, loadingBar: false });
+        this.checkResult = { ok: answer.ok, problems: answer.problems, missing: answer.missing };
       } catch (error) {
         notifyError("The workflow could not be checked.", error);
       } finally {

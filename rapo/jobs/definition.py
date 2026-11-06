@@ -15,6 +15,9 @@ from ..transfer import catalogue as transfer_catalogue
 from . import catalogue
 
 VERSION = 1
+# The most a window of hours, and the most days back a data date, may be.
+MAX_HOURS = 720
+MAX_DAYS_AGO = 31
 # What the browser gets instead of the value of a secret parameter.
 MASK = '********'
 PARTS = ('pre', 'condition', 'main', 'post')
@@ -452,19 +455,96 @@ def _check_file_count(condition, label, problems):
         problems.append(f'{label}: min is more than max.')
 
 
-def _check_condition(condition, ctx, problems, check_paths):
-    label = 'Condition'
+def _check_window(window, label, target_type, problems):
+    if not isinstance(window, dict):
+        problems.append(f'{label}: window is an object.')
+        return
+    kind = window.get('kind')
+    if kind not in catalogue.TARGET_WINDOWS:
+        problems.append(f'{label}: the window is one of '
+                        f'{", ".join(catalogue.TARGET_WINDOWS)}.')
+        return
+    allowed = {'today': set(), 'since_last_run': set(), 'hours': {'hours'},
+               'data_date': {'days_ago'}}[kind]
+    extra = sorted(set(window) - allowed - {'kind'})
+    if extra:
+        problems.append(f'{label}: the window {kind} has no setting '
+                        f'{", ".join(extra)}.')
+    if kind == 'hours':
+        value = window.get('hours')
+        if isinstance(value, bool) or not isinstance(value, int) \
+                or not 1 <= value <= MAX_HOURS:
+            problems.append(f'{label}: hours is a whole number, 1 to '
+                            f'{MAX_HOURS}.')
+    elif kind == 'data_date':
+        if target_type != 'control':
+            problems.append(f'{label}: the window data_date is for a '
+                            'control: only it has a date of its data.')
+        value = window.get('days_ago')
+        if isinstance(value, bool) or not isinstance(value, int) \
+                or not 0 <= value <= MAX_DAYS_AGO:
+            problems.append(f'{label}: days_ago is a whole number, 0 '
+                            f'(today) to {MAX_DAYS_AGO}.')
+
+
+def _check_run_status(condition, label, ctx, problems):
+    targets = condition.get('targets')
+    if not isinstance(targets, list) or not targets:
+        problems.append(f'{label}: give at least one target: a control, a '
+                        'transfer, a job or a workflow.')
+        return
+    owner = (ctx or {}).get('owner')
+    seen = set()
+    for number, target in enumerate(targets, 1):
+        where = f'{label}: target {number}'
+        if not isinstance(target, dict):
+            problems.append(f'{where} is not an object.')
+            continue
+        extra = sorted(set(target) - {'type', 'name', 'window'})
+        if extra:
+            problems.append(f'{where} has no setting {", ".join(extra)}.')
+        kind, name = target.get('type'), target.get('name')
+        if kind not in catalogue.TARGET_TYPES:
+            problems.append(f'{where}: type is one of '
+                            f'{", ".join(catalogue.TARGET_TYPES)}.')
+            continue
+        if not (isinstance(name, str) and name.strip()
+                and len(name.strip()) <= 128):
+            problems.append(f'{where}: name is the name of the {kind}.')
+            continue
+        key = (kind, name.strip())
+        if key in seen:
+            problems.append(f'{where}: the {kind} {name.strip()} is given '
+                            'twice.')
+        seen.add(key)
+        if owner and tuple(owner) == key:
+            problems.append(f'{where}: a {kind} can not wait for itself.')
+        _check_window(target.get('window'), where, kind, problems)
+
+
+def check_condition(condition, ctx, problems, check_paths=False, kinds=None,
+                    label='Condition'):
+    """Check a condition, adding to `problems`. `kinds` limits the kinds
+    (a workflow may have some only); `ctx` is what the definition is checked
+    against, with the `owner` ('job' or 'workflow', name) of the condition
+    when it is known."""
+    _check_condition(condition, ctx, problems, check_paths, kinds, label)
+
+
+def _check_condition(condition, ctx, problems, check_paths, kinds=None,
+                     label='Condition'):
     if not isinstance(condition, dict):
         problems.append(f'{label}: is not an object.')
         return
     kind = condition.get('kind')
-    if kind not in catalogue.CONDITION_KINDS:
+    if kind not in (kinds or catalogue.CONDITION_KINDS):
         problems.append(f'{label}: kind is one of '
-                        f'{", ".join(catalogue.CONDITION_KINDS)}.')
+                        f'{", ".join(kinds or catalogue.CONDITION_KINDS)}.')
         return
     allowed = {'SQL': {'text'}, 'EXIT_CODE': {'task'},
                'FILE_EXISTS': {'path', 'exists'},
-               'FILE_COUNT': {'directory', 'mask', 'min', 'max'}}[kind]
+               'FILE_COUNT': {'directory', 'mask', 'min', 'max'},
+               'RUN_STATUS': {'targets'}}[kind]
     unknown = sorted(set(condition) - allowed - {'kind'})
     if unknown:
         problems.append(f'{label}: {kind} has no setting '
@@ -482,6 +562,8 @@ def _check_condition(condition, ctx, problems, check_paths):
             problems.append(f'{label}: path is empty.')
         if not isinstance(condition.get('exists', True), bool):
             problems.append(f'{label}: exists is true or false.')
+    elif kind == 'RUN_STATUS':
+        _check_run_status(condition, label, ctx, problems)
     else:
         _check_file_count(condition, label, problems)
 

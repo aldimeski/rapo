@@ -26,6 +26,7 @@ from .. import options
 
 from . import catalogue
 from . import definition as definitions
+from . import dependencies
 from . import processes
 
 DONE, ERROR, CANCELED = 'D', 'E', 'C'
@@ -392,11 +393,18 @@ def _expand(text, variables, now):
 
 
 def evaluate_condition(condition, variables, parameters, log, workdir, ctx,
-                       counter, now=None):
+                      counter, now=None, owner=None):
     """Get (met, value) of the condition; `value` is a short text for the
-    run. Raises TaskFailed when it can not be evaluated."""
+    run (for RUN_STATUS, why it is not met). `owner` is ('job' or 'workflow',
+    name). Raises TaskFailed when it can not be evaluated."""
     now = now or dt.datetime.now()
     kind = condition['kind']
+    if kind == 'RUN_STATUS':
+        try:
+            met, why = dependencies.check(condition, owner, now)
+        except dependencies.DependencyError as error:
+            raise TaskFailed(str(error)) from error
+        return met, 'met' if met else why
     if kind == 'SQL':
         value = query_value(condition['text'], variables)
         return _truthy(value), '' if value is None else str(value)
@@ -473,14 +481,17 @@ def execute(spec, emit, ctx=None, now=None):
             if stage == 'CONDITION':
                 met, value = evaluate_condition(
                     part, variables, parameters, log, workdir, ctx, counter,
-                    now)
+                    now, owner=('job', spec['job_name']))
                 outcome['condition_value'] = value[:100]
                 emit('condition', value[:100])
                 log.info(f'Condition {part["kind"]}: {value}; '
                          f'{"met" if met else "not met"}')
                 if not met:
-                    outcome.update(status=CANCELED,
-                                   message='The condition was not met.')
+                    outcome.update(
+                        status=CANCELED,
+                        message=f'The condition was not met: {value}.'
+                        if part['kind'] == 'RUN_STATUS' else
+                        'The condition was not met.')
                     return outcome
                 continue
             code = run_task(part, variables, parameters, log, workdir, ctx,

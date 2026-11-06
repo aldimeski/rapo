@@ -4,6 +4,7 @@
       <q-card-section class="row items-center q-py-sm">
         <div class="text-h6">Runs of {{ name }}</div>
         <q-space />
+        <q-toggle v-model="hideUnmet" dense label="Hide runs stopped by a condition" class="q-mr-md text-body2" @update:model-value="load" />
         <q-btn aria-label="Refresh" flat round dense icon="fas fa-sync" @click="load" />
         <q-btn aria-label="Close" flat round icon="fas fa-times" v-close-popup />
       </q-card-section>
@@ -99,7 +100,7 @@ export default {
   },
   emits: ["update:modelValue", "changed"],
   data() {
-    return { runs: null, selected: null, split: 600 };
+    return { runs: null, selected: null, split: 600, hideUnmet: false };
   },
   computed: {
     lines() {
@@ -153,7 +154,7 @@ export default {
     },
     async load() {
       try {
-        this.runs = await api("get-job-runs", { params: { name: this.name, limit: 200 }, loadingBar: false });
+        this.runs = await api("get-job-runs", { params: { name: this.name, limit: 200, hide_unmet: this.hideUnmet ? "true" : undefined }, loadingBar: false });
         if (this.selected) {
           const run = this.runs.find((item) => item.run_id === this.selected.run_id);
           // The log of a run still active grows.

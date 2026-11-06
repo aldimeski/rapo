@@ -49,6 +49,10 @@
                 <q-icon v-if="index" name="fas fa-chevron-right" size="9px" color="blue-grey-4" class="q-mx-xs" /><span class="step-name">{{ job }}</span>
               </span>
             </template>
+            <div v-if="row.waits_for && row.waits_for.length" class="text-grey-7 text-caption">
+              <q-icon name="fas fa-hourglass-half" size="10px" class="q-mr-xs" />Waits for {{ row.waits_for.map((target) => `${target.type} ${target.name}`).join(", ") }}
+              <q-tooltip><div v-for="target in row.waits_for" :key="target.type + target.name">{{ targetText(target) }}</div></q-tooltip>
+            </div>
           </td>
           <td class="schedule-cell">
             <template v-if="row.schedule_config">
@@ -73,6 +77,9 @@
               </div>
             </template>
             <span v-else class="text-grey-6">never</span>
+            <div v-if="row.unmet" class="text-caption text-amber-9">
+              <q-icon name="fas fa-exclamation-triangle" size="10px" class="q-mr-xs" />condition not met at {{ shortTime(row.unmet.last) }}<template v-if="row.unmet.count > 1"> ({{ row.unmet.count }} times since)</template>
+            </div>
           </td>
           <td class="text-no-wrap text-right">
             <q-btn v-if="row.running" aria-label="Cancel run" size="sm" color="grey-7" round flat icon="fas fa-times" :disable="!$can('jobs', 'operate')" @click="cancelRun(row)">
@@ -128,6 +135,8 @@ import SkeletonRows from "./SkeletonRows.vue";
 import WorkflowRunsDialog from "./WorkflowRunsDialog.vue";
 import { api, notifyError } from "../api";
 import { workflowRunStatus } from "../constants";
+import { toDateTimeString } from "../utils/format";
+import { targetText } from "../utils/job";
 import { describeSchedule } from "../utils/schedule";
 
 // The list of the workflows, the second tab of the Jobs page. The page reads them (get-workflows) and hands them over;
@@ -172,6 +181,12 @@ export default {
     },
   },
   methods: {
+    // "07:10" for a moment of today, else the date and the time.
+    shortTime(value) {
+      const text = toDateTimeString(value);
+      return text.startsWith(new Date().toLocaleDateString("sv-SE")) ? text.substring(11, 16) : text.substring(0, 16);
+    },
+    targetText,
     workflowRunStatus,
     describe(config) {
       return describeSchedule(config);
