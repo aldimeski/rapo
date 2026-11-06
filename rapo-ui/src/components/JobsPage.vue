@@ -17,6 +17,13 @@
     </q-banner>
 
     <q-card class="fill-card column no-wrap">
+      <q-tabs v-model="tab" dense align="left" class="text-blue-grey-8" active-color="teal" indicator-color="teal" no-caps inline-label>
+        <q-tab name="jobs" :label="`Jobs${data ? ' (' + data.jobs.length + ')' : ''}`" icon="fas fa-cog" />
+        <q-tab name="workflows" :label="`Workflows${workflows ? ' (' + workflows.length + ')' : ''}`" icon="fas fa-stream" />
+      </q-tabs>
+      <q-separator />
+      <workflows-panel v-if="tab === 'workflows'" :workflows="workflows" :error="workflowError" @reload="load()" />
+      <template v-else>
       <div class="row items-center q-pa-sm q-gutter-sm">
         <q-input v-model="search" dense outlined clearable debounce="200" placeholder="Search job or description" class="col-4">
           <template v-slot:prepend><q-icon name="fas fa-search" /></template>
@@ -58,6 +65,9 @@
               <router-link :to="{ name: 'edit-job', params: { name: row.job_name } }" class="job-link text-weight-bold" :class="row.status === 'N' ? 'text-grey-7' : 'text-blue-grey-9'">{{ row.job_name }}</router-link>
               <q-chip v-if="row.status === 'N'" dense color="grey-6" text-color="white" class="q-ml-sm">Off</q-chip>
               <div v-if="row.description" class="text-grey-7 text-caption">{{ row.description }}</div>
+              <div v-if="row.workflows && row.workflows.length" class="text-grey-7 text-caption">
+                <q-icon name="fas fa-stream" size="10px" class="q-mr-xs" />In {{ row.workflows.length === 1 ? "workflow" : "workflows" }} {{ row.workflows.join(", ") }}
+              </div>
             </td>
             <td>
               <q-chip dense :color="jobType(row.job_type).color" text-color="white" :icon="jobType(row.job_type).icon">{{ jobType(row.job_type).label }}</q-chip>
@@ -129,6 +139,7 @@
           </tr>
         </tbody>
       </q-markup-table>
+      </template>
     </q-card>
 
     <job-runs-dialog v-model="runsOpen" :name="runsName" :run-id="runsRunId" @changed="load()" />
@@ -144,21 +155,27 @@ import JobRunsDialog from "./JobRunsDialog.vue";
 import JobSchedulerBar from "./JobSchedulerBar.vue";
 import LoadErrorNotice from "./LoadErrorNotice.vue";
 import SkeletonRows from "./SkeletonRows.vue";
+import WorkflowsPanel from "./WorkflowsPanel.vue";
 import { api, notifyError } from "../api";
 import { JOB_STAGES, jobType, runStatus } from "../constants";
 import { liveRefetch } from "../socket";
 import { fillViewportToBottom } from "../utils/layout";
 import { describeSchedule } from "../utils/schedule";
-import { toMillis } from "../utils/format";
+import { escapeHtml, toMillis } from "../utils/format";
 
 // A run that waits or runs is shown here within this many seconds, whatever the live updates say.
 const REFRESH_SECONDS = 10;
 
 export default {
-  components: { DateTimeText, JobRunDialog, JobRunsDialog, JobSchedulerBar, LoadErrorNotice, SkeletonRows },
+  components: { DateTimeText, JobRunDialog, JobRunsDialog, JobSchedulerBar, LoadErrorNotice, SkeletonRows, WorkflowsPanel },
   data() {
     return {
+      // The tab is in the address (?tab=workflows), so a link and a reload keep it.
+      tab: this.$route.query.tab === "workflows" ? "workflows" : "jobs",
       data: null,
+      // get-workflows, or null while they load; and why they could not be read (the tables of v0.10.0 may be missing).
+      workflows: null,
+      workflowError: null,
       catalogue: null,
       loadError: null,
       search: "",
@@ -186,9 +203,11 @@ export default {
       return this.status && this.status.server_time ? toMillis(this.status.server_time) - this.statusRead : 0;
     },
     // The job that fires next of those that are on.
+    // The job or workflow that fires next of those that are on.
     nextFire() {
-      const next = this.allRows.filter((row) => row.status === "Y" && row.next_fire).sort((a, b) => toMillis(a.next_fire) - toMillis(b.next_fire))[0];
-      return next ? { job_name: next.job_name, next_fire: next.next_fire } : null;
+      const jobs = this.allRows.filter((row) => row.status === "Y" && row.next_fire).map((row) => ({ job_name: row.job_name, next_fire: row.next_fire }));
+      const workflows = (this.workflows || []).filter((row) => row.status === "Y" && row.next_fire).map((row) => ({ job_name: row.workflow_name, next_fire: row.next_fire }));
+      return [...jobs, ...workflows].sort((a, b) => toMillis(a.next_fire) - toMillis(b.next_fire))[0] || null;
     },
     // The jobs that are on and have neither an address of their own nor a default one for the failure mail.
     withoutAddress() {
@@ -218,6 +237,11 @@ export default {
       return this.allRows.filter((row) => tests[this.filter](row) && (!needle || [row.job_name, row.description, row.job_type].some((text) => text && String(text).toLowerCase().includes(needle))));
     },
   },
+  watch: {
+    tab(value) {
+      this.$router.replace({ name: "jobs", query: value === "workflows" ? { tab: "workflows" } : {} });
+    },
+  },
   methods: {
     ...mapActions(["updateJobSchedulerStatus"]),
     fillViewportToBottom,
@@ -234,6 +258,7 @@ export default {
       return /^not sent/i.test(text) ? "mail not sent" : "mail sent";
     },
     async load() {
+      this.loadWorkflows();
       try {
         this.data = await api("get-jobs", { loadingBar: false });
         this.loadError = null;
@@ -242,6 +267,18 @@ export default {
           notifyError("Failed to refresh the jobs.", error);
         } else {
           this.loadError = error.message;
+        }
+      }
+    },
+    async loadWorkflows() {
+      try {
+        this.workflows = (await api("get-workflows", { loadingBar: false })).workflows;
+        this.workflowError = null;
+      } catch (error) {
+        // The jobs go on without them: the tab says why.
+        this.workflowError = error.message;
+        if (!this.workflows) {
+          this.workflows = [];
         }
       }
     },
@@ -292,18 +329,32 @@ export default {
         notifyError(`Failed to switch ${row.job_name} ${enable ? "on" : "off"}.`, error);
       }
     },
+    // A job that is a step of workflows is taken out of them, which is said and has to be confirmed: a workflow left
+    // without steps is switched off.
     remove(row) {
+      const used = row.workflows || [];
+      const plain = `Delete ${row.job_name} with its versions? The history of its runs stays until its retention ends.`;
+      const named = used.map((name) => `<b>${escapeHtml(name)}</b>`).join(", ");
       this.$q
         .dialog({
-          title: "Delete job",
-          message: `Delete ${row.job_name} with its versions? The history of its runs stays until its retention ends.`,
+          title: used.length ? "Delete a job that is in workflows" : "Delete job",
+          message: used.length
+            ? `${escapeHtml(row.job_name)} is a step of the workflow${used.length === 1 ? "" : "s"} ${named}. Deleting it takes it out of ${used.length === 1 ? "that workflow" : "those workflows"} ` +
+              "(a new version of each), and a workflow left without steps is switched off. " +
+              "The history of its runs stays until its retention ends."
+            : plain,
+          html: used.length > 0,
           cancel: true,
           persistent: true,
-          ok: { label: "Delete", color: "deep-orange", flat: true },
+          ok: { label: used.length ? "Delete and take it out" : "Delete", color: "deep-orange", flat: true },
         })
         .onOk(async () => {
           try {
-            await api("delete-job", { method: "DELETE", params: { name: row.job_name } });
+            const answer = await api("delete-job", { method: "DELETE", params: { name: row.job_name, confirm: used.length ? "true" : null } });
+            const off = (answer.workflows || []).filter((item) => item.switched_off).map((item) => item.workflow_name);
+            if (off.length) {
+              this.$q.notify({ type: "warning", message: `${off.join(", ")} ${off.length === 1 ? "has" : "have"} no steps left and ${off.length === 1 ? "was" : "were"} switched off.` });
+            }
             await this.load();
           } catch (error) {
             notifyError(`Failed to delete ${row.job_name}.`, error);

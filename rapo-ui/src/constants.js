@@ -73,6 +73,8 @@ export const RUN_STATUSES = {
   E: { label: "Error", icon: "fas fa-exclamation-circle", color: "deep-orange" },
   C: { label: "Canceled", icon: "fas fa-times-circle", color: "brown-4" },
   X: { label: "Revoked", icon: "fas fa-times-circle", color: "grey" },
+  // A step of a workflow run that was not run because an earlier step stopped the workflow.
+  K: { label: "Skipped", icon: "fas fa-forward", color: "grey-5" },
 };
 
 export const RUN_STATUS_OPTIONS = Object.entries(RUN_STATUSES).map(([value, status]) => ({ label: status.label, value }));
@@ -122,6 +124,7 @@ export const TRIGGER_TYPES = {
   ITERATION: { label: "Iteration", icon: "fas fa-redo", color: "indigo-4" },
   CASCADE: { label: "Cascade", icon: "fas fa-sitemap", color: "deep-purple-4" },
   UPSTREAM: { label: "Chain", icon: "fas fa-link", color: "cyan-8" },
+  WORKFLOW: { label: "Workflow", icon: "fas fa-stream", color: "indigo-5" },
 };
 
 export const TRIGGER_TYPE_OPTIONS = Object.entries(TRIGGER_TYPES).map(([value, type]) => ({ label: type.label, value }));
@@ -167,6 +170,15 @@ export const JOB_TYPES = {
 
 export function jobType(type) {
   return JOB_TYPES[type] || { label: type || "Unknown", icon: "fas fa-question-circle", color: "grey" };
+}
+
+// A workflow run that was stopped because a step's condition was not met (or the step was canceled) ends canceled, and
+// is shown as a warning, not as a cancel by the user.
+export function workflowRunStatus(run) {
+  if (run && run.status === "C" && String(run.message || "").startsWith("Stopped at step")) {
+    return { label: "Stopped", icon: "fas fa-exclamation-triangle", color: "amber-8" };
+  }
+  return runStatus(run && run.status);
 }
 
 // The parts of a run in order: where it got to (rapo_job_run.stage).

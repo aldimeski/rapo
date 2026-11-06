@@ -94,6 +94,20 @@ const router = createRouter({
       },
     },
     {
+      name: "edit-workflow",
+      path: "/edit-workflow/:name?",
+      meta: { title: "Workflow", scope: ["jobs", "view"], hideSearch: true },
+      component: () => import(/* webpackChunkName: "workflow-editor" */ "./components/WorkflowEdit.vue"),
+      props: true,
+      beforeEnter: (to, from, next) => {
+        if (!to.params.name) {
+          next({ path: "/jobs", query: { tab: "workflows" } }); // Redirect to the list if the workflow is undefined
+        } else {
+          next();
+        }
+      },
+    },
+    {
       name: "transfers",
       path: "/transfers",
       meta: { title: "Transfers", scope: ["datasources", "view"], hideSearch: true },

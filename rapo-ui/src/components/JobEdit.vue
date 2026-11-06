@@ -56,6 +56,11 @@
             <!-- General -->
             <q-tab-panel name="general">
               <div class="q-ma-lg q-gutter-y-md panel-width">
+                <q-banner v-if="workflows.length" dense class="bg-indigo-1 text-indigo-10">
+                  <template #avatar><q-icon name="fas fa-stream" size="16px" color="indigo" /></template>
+                  This job is a step of the workflow{{ workflows.length === 1 ? "" : "s" }} <strong>{{ workflows.join(", ") }}</strong>. It keeps its own schedule and can still be run by hand. Inside a workflow its e-mail address is not used: the workflow
+                  sends one mail for the whole run.
+                </q-banner>
                 <q-input
                   v-model="form.name"
                   outlined
@@ -311,6 +316,8 @@ export default {
       catalogue: null,
       form: emptyForm(null),
       savedJson: "",
+      // The workflows that have the job as a step.
+      workflows: [],
       // The version of the job as saved, and the versions read for the Versions tab.
       version: 0,
       versions: null,
@@ -426,6 +433,7 @@ export default {
         schedule: config && scheduleUnits(config) ? parseSchedule(config) : defaultSchedule(),
       };
       this.version = job.version;
+      this.workflows = job.workflows || [];
       this.shown = {};
       this.savedJson = JSON.stringify(this.form);
     },

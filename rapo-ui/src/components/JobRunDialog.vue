@@ -9,9 +9,9 @@
       <q-separator />
 
       <q-card-section v-if="!job" class="text-center"><q-spinner color="teal" /></q-card-section>
-      <q-card-section v-else-if="!fields.length" class="text-grey-8">This job has no parameters: it runs as it is saved.</q-card-section>
+      <q-card-section v-else-if="!fields.length" class="text-grey-8">This {{ kind }} has no parameters: it runs as it is saved.</q-card-section>
       <q-card-section v-else class="q-gutter-y-sm">
-        <div class="text-grey-8">These values are used for this run only; the job keeps its own.</div>
+        <div class="text-grey-8">These values are used for this run only; the {{ kind }} keeps its own.</div>
         <q-input
           v-for="field in fields"
           :key="field.name"
@@ -46,6 +46,8 @@ export default {
   props: {
     modelValue: { type: Boolean, default: false },
     name: { type: String, default: null },
+    // "job", or "workflow": the same dialog runs a workflow with other values of its parameters.
+    kind: { type: String, default: "job" },
   },
   emits: ["update:modelValue", "started"],
   data() {
@@ -66,7 +68,7 @@ export default {
       this.job = null;
       this.fields = [];
       try {
-        this.job = await api("get-job", { params: { name: this.name }, loadingBar: false });
+        this.job = await api(this.kind === "workflow" ? "get-workflow" : "get-job", { params: { name: this.name }, loadingBar: false });
         this.fields = ((this.job.definition && this.job.definition.parameters) || []).map((item) => {
           const field = { name: item.name, secret: Boolean(item.secret), original: item.secret ? "" : item.value || "", shown: false };
           field.value = field.original;
@@ -86,7 +88,7 @@ export default {
             parameters[field.name] = field.value;
           }
         }
-        const answer = await api("run-job", { method: "POST", params: { name: this.name }, body: Object.keys(parameters).length ? { parameters } : undefined });
+        const answer = await api(this.kind === "workflow" ? "run-workflow" : "run-job", { method: "POST", params: { name: this.name }, body: Object.keys(parameters).length ? { parameters } : undefined });
         this.$q.notify({ type: "positive", message: `${this.name} queued.` });
         this.$emit("started", answer.run_id);
         this.visible = false;
