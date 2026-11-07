@@ -6,14 +6,6 @@ The full notes and upgrade steps of each release are in `migrations/<version>/` 
 
 ---
 
-## v0.12.1 — 2026-11-07
-
-No change for an installation that was upgraded with the scripts of the releases: there is no `upgrade.sql`, and the application is the same as v0.12.0 (`migrations/v0.12.1/README.md`).
-
-- **The schema of a new installation has the jobs and the workflows.** `schema/oracle.sql` had the tables of the file transfers but not those of the jobs (`rapo_job`, `rapo_job_version`, `rapo_job_run`, `rapo_job_log`, `rapo_job_event`), nor of the workflows (`rapo_workflow`, `rapo_workflow_version`, `rapo_workflow_run`, `rapo_workflow_run_step`, `rapo_workflow_log`), nor the row `RAPO.JOBS` of the lease of the job scheduler; a new database had to be given `migrations/v0.9.0/upgrade.sql` and `migrations/v0.10.0/upgrade.sql` by hand. It now has them, the same as the upgrade scripts make.
-
----
-
 ## v0.12.0 — 2026-11-07
 
 No database change and no new option: there is no `upgrade.sql`. Update the source, reinstall and restart (`migrations/v0.12.0/README.md`).
