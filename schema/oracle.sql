@@ -365,6 +365,7 @@ create table rapo_scheduler (
   constraint rapo_scheduler_pk primary key (id)
 );
 insert into rapo_scheduler (id, status) values ('RAPO.SCHEDULER', 'N');
+insert into rapo_scheduler (id, status) values ('RAPO.JOBS', 'N');
 commit;
 
 create table rapo_scheduler_event (
@@ -568,6 +569,215 @@ create table rapo_transfer_log (
 
 create index rapo_transfer_log_run_ix on rapo_transfer_log (run_id, line_no);
 create index rapo_transfer_log_param_ix on rapo_transfer_log (param_name, log_id);
+
+-- The jobs and the workflows (RAJO): what the upgrade scripts of v0.9.0 and v0.10.0 make for an
+-- installation that was upgraded, a new installation gets here. A job is run by the job scheduler,
+-- whose lease is the row RAPO.JOBS of rapo_scheduler.
+create sequence rapo_job_seq
+increment by 1
+start with 1
+nocache;
+
+create table rapo_job (
+  job_id          number(*, 0) default rapo_job_seq.nextval not null,
+  job_name        varchar2(128 char) not null,
+  description     varchar2(500 char),
+  job_type        varchar2(16 char) not null,
+  definition      clob not null,
+  schedule_config varchar2(4000 char),
+  status          varchar2(1 char) default 'Y' not null,
+  notify_email    varchar2(500 char),
+  version         number(*, 0) default 1 not null,
+  created_date    date default sysdate not null,
+  created_by      varchar2(256 char),
+  updated_date    date default sysdate not null,
+  updated_by      varchar2(256 char),
+  constraint rapo_job_pk primary key (job_id),
+  constraint rapo_job_name_uk unique (job_name),
+  constraint rapo_job_status_ck check (status in ('Y', 'N'))
+);
+
+create table rapo_job_version (
+  job_id          number(*, 0) not null,
+  version         number(*, 0) not null,
+  definition      clob not null,
+  schedule_config varchar2(4000 char),
+  updated_date    date default sysdate not null,
+  updated_by      varchar2(256 char),
+  constraint rapo_job_version_pk primary key (job_id, version)
+);
+
+create sequence rapo_job_run_seq
+increment by 1
+start with 1
+nocache;
+
+create table rapo_job_run (
+  run_id             number(*, 0) default rapo_job_run_seq.nextval not null,
+  job_id             number(*, 0) not null,
+  job_name           varchar2(128 char) not null,
+  trigger_type       varchar2(16 char) not null,
+  scheduled_time     date,
+  queued_time        date default sysdate not null,
+  start_time         date,
+  end_time           date,
+  status             varchar2(1 char) default 'I' not null,
+  stage              varchar2(10 char),
+  condition_value    varchar2(100 char),
+  exit_code          number(*, 0),
+  message            varchar2(4000 char),
+  runner             varchar2(255 char),
+  requested_by       varchar2(256 char),
+  definition_version number(*, 0),
+  log_lines          number(*, 0),
+  mail_status        varchar2(200 char),
+  workflow_run_id    number(*, 0),
+  constraint rapo_job_run_pk primary key (run_id),
+  constraint rapo_job_run_status_ck check (status in ('I', 'S', 'D', 'E', 'C'))
+);
+
+create index rapo_job_run_job_ix on rapo_job_run (job_id, queued_time);
+create index rapo_job_run_time_ix on rapo_job_run (queued_time);
+
+create sequence rapo_job_log_seq
+increment by 1
+start with 1
+nocache;
+
+create table rapo_job_log (
+  log_id    number(*, 0) default rapo_job_log_seq.nextval not null,
+  run_id    number(*, 0) not null,
+  job_id    number(*, 0) not null,
+  line_no   number(*, 0) not null,
+  log_time  date,
+  log_level varchar2(8 char),
+  stream    varchar2(4 char),
+  message   varchar2(4000 char),
+  constraint rapo_job_log_pk primary key (log_id)
+);
+
+create index rapo_job_log_run_ix on rapo_job_log (run_id, line_no);
+create index rapo_job_log_job_ix on rapo_job_log (job_id, log_id);
+
+create sequence rapo_job_event_seq
+increment by 1
+start with 1
+nocache;
+
+create table rapo_job_event (
+  event_id       number(*, 0) default rapo_job_event_seq.nextval not null,
+  job_id         number(*, 0),
+  workflow_id    number(*, 0),
+  trigger_type   varchar2(16 char),
+  event_type     varchar2(10 char),
+  scheduled_time date,
+  event_time     date,
+  updated        date,
+  run_id         number(*, 0),
+  message        varchar2(4000 char),
+  runner         varchar2(255 char),
+  constraint rapo_job_event_pk primary key (event_id)
+);
+
+create index rapo_job_event_job_ix on rapo_job_event (job_id, event_time);
+create index rapo_job_event_time_ix on rapo_job_event (event_time);
+create index rapo_job_event_upd_ix on rapo_job_event (updated);
+
+create sequence rapo_workflow_seq
+increment by 1
+start with 1
+nocache;
+
+create table rapo_workflow (
+  workflow_id     number(*, 0) default rapo_workflow_seq.nextval not null,
+  workflow_name   varchar2(128 char) not null,
+  description     varchar2(500 char),
+  definition      clob not null,
+  schedule_config varchar2(4000 char),
+  status          varchar2(1 char) default 'Y' not null,
+  notify_email    varchar2(500 char),
+  version         number(*, 0) default 1 not null,
+  created_date    date default sysdate not null,
+  created_by      varchar2(256 char),
+  updated_date    date default sysdate not null,
+  updated_by      varchar2(256 char),
+  constraint rapo_workflow_pk primary key (workflow_id),
+  constraint rapo_workflow_name_uk unique (workflow_name),
+  constraint rapo_workflow_status_ck check (status in ('Y', 'N'))
+);
+
+create table rapo_workflow_version (
+  workflow_id     number(*, 0) not null,
+  version         number(*, 0) not null,
+  definition      clob not null,
+  schedule_config varchar2(4000 char),
+  updated_date    date default sysdate not null,
+  updated_by      varchar2(256 char),
+  constraint rapo_workflow_version_pk primary key (workflow_id, version)
+);
+
+create sequence rapo_workflow_run_seq
+increment by 1
+start with 1
+nocache;
+
+create table rapo_workflow_run (
+  run_id             number(*, 0) default rapo_workflow_run_seq.nextval not null,
+  workflow_id        number(*, 0) not null,
+  workflow_name      varchar2(128 char) not null,
+  trigger_type       varchar2(16 char) not null,
+  scheduled_time     date,
+  queued_time        date default sysdate not null,
+  start_time         date,
+  end_time           date,
+  status             varchar2(1 char) default 'I' not null,
+  step_no            number(*, 0),
+  steps_total        number(*, 0),
+  message            varchar2(4000 char),
+  runner             varchar2(255 char),
+  requested_by       varchar2(256 char),
+  definition_version number(*, 0),
+  log_lines          number(*, 0),
+  mail_status        varchar2(200 char),
+  constraint rapo_workflow_run_pk primary key (run_id),
+  constraint rapo_workflow_run_status_ck check (status in ('I', 'S', 'D', 'E', 'C'))
+);
+
+create index rapo_workflow_run_wf_ix on rapo_workflow_run (workflow_id, queued_time);
+create index rapo_workflow_run_time_ix on rapo_workflow_run (queued_time);
+
+create table rapo_workflow_run_step (
+  run_id      number(*, 0) not null,
+  step_no     number(*, 0) not null,
+  job_id      number(*, 0),
+  job_name    varchar2(128 char) not null,
+  job_run_id  number(*, 0),
+  status      varchar2(1 char) default 'W' not null,
+  start_time  date,
+  end_time    date,
+  message     varchar2(4000 char),
+  constraint rapo_workflow_run_step_pk primary key (run_id, step_no),
+  constraint rapo_workflow_step_status_ck check (status in ('W', 'I', 'S', 'D', 'E', 'C', 'K'))
+);
+
+create sequence rapo_workflow_log_seq
+increment by 1
+start with 1
+nocache;
+
+create table rapo_workflow_log (
+  log_id      number(*, 0) default rapo_workflow_log_seq.nextval not null,
+  run_id      number(*, 0) not null,
+  workflow_id number(*, 0) not null,
+  line_no     number(*, 0) not null,
+  log_time    date,
+  log_level   varchar2(8 char),
+  message     varchar2(4000 char),
+  constraint rapo_workflow_log_pk primary key (log_id)
+);
+
+create index rapo_workflow_log_run_ix on rapo_workflow_log (run_id, line_no);
+create index rapo_workflow_log_wf_ix on rapo_workflow_log (workflow_id, log_id);
 
 create or replace function rapo_prerun_control_hook (in_process_id number) return varchar2
 as

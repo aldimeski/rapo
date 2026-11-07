@@ -133,7 +133,9 @@ on PyPI.
     .venv/bin/pip install --no-build-isolation -e .
     ```
 
-1. Deploy the database schema using the [scripts](schema/oracle.sql).
+1. Deploy the database schema using the [scripts](schema/oracle.sql). It is the schema of the current release, with the tables of
+   the file transfers, the jobs and the workflows: a **new** installation needs no `migrations/*/upgrade.sql`, which are for an
+   installation that is being upgraded.
 
 1. Prepare the configuration file _rapo.ini_ (`install.sh` creates it from _rapo.ini.example_; fill in the credentials and token, and set `client_path` to the Instant Client folder so that a start from cron finds it) and place it in the application folder (next to the `rapo` package), or point the `RAPO_CONFIG` environment variable to it.
 
