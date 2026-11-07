@@ -406,6 +406,25 @@ recorded and shown as waiting (`I`). The code: `rapo/jobs/workflow.py` (definiti
 4. UI.
 5. Docs, CHANGELOG, `v0.10.0`.
 
+## 13. Started outside rapo (0.12.0)
+
+The crontab (Linux) and the Windows Task Scheduler start work that rapo does not run. The wish: see it in one place with the
+jobs, workflows and transfers. Decisions: **every** entry of the scheduler of the user the server runs as is listed (not the
+system's, not other users'); it is **read only**; a new tab *External* on the Jobs page, always shown; read the first time the tab
+opens, then only on *Rescan*; the whole command is shown; an entry that starts what the main task of a job runs is linked to
+the job, which says it is also started outside; it can not be the target of a condition (rapo does not know how it ended).
+
+* **Linux**: `crontab -l`, parsed with `rapo/transfer/crontab.py` (the expressions and the next start; the module is only code, it
+  works while `[TRANSFER] enabled` is off). **Windows**: PowerShell `Get-ScheduledTask` and `Get-ScheduledTaskInfo` printed as JSON,
+  filtered to the tasks whose principal is the user the server runs as. `schtasks` is not used: its column names are translated
+  on a localized Windows.
+* **Linking** (`rapo/jobs/external.py`): the job gives the paths and the transfer param its main task runs; the entry gives the
+  paths and params in its command and in the scripts it runs (two levels, as for the transfers). SQL and typed code have none.
+  Paths are compared normalized (slashes, case on Windows); a program given by its name only is not matched.
+* **The scan** is kept in the server (`scan`, `kept`) until it is asked for again; the linking is done when it is read, so
+  it follows the jobs as they change. The job lists read the kept scan and start one in the background when there is none.
+* **API**: `get-external-tasks` (area Jobs, View) and `external` in `get-jobs` and `get-job`. UI: `ExternalPanel.vue`.
+
 ## 12. Dependencies (0.11.0)
 
 Requirement: `documents/RAJO.txt`, second phase. A **dependency** is a condition of a job, or of a whole workflow at its

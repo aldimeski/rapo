@@ -53,7 +53,7 @@ A scope is a level per area; a level includes the ones below it (`none` < `view`
 | `controls`    | view, edit                | `get-all-controls`, `get-schema-drift`, `get-control-versions`, datasource and view reads, `schedule-preview`, `get-next-fires` | | `save-control`, `delete-control`, schema update/recreate/check, orphan and output table drops, version deletes, `send-test-email`, `compile-view` |
 | `kpis`        | view, operate, edit       | KPI types, a control's KPIs, KPI history and runs, orphan list | `calculate-kpi`, `reingest-kpis`                           | `save-kpi-type`, `delete-kpi-type`, orphan KPI deletes/reassigns |
 | `scheduler`   | view, operate             | `scheduler-status`, `-upcoming`, `-events`, `get-missed-fires` | `scheduler-stop`, `scheduler-start`                        |                                                   |
-| `jobs`        | view, operate, edit       | `get-jobs`, `get-job`, `get-job-catalogue`, `get-job-runs`, `get-job-run`, `get-job-versions`, `job-scheduler-status`, `-upcoming`, `-events`, `get-job-transfer-params`, `-catalogue`, `get-job-transfer`, `get-workflows`, `get-workflow`, `get-workflow-runs`, `get-workflow-run`, `get-workflow-versions`, `get-dependency-targets` | `run-job`, `cancel-job-run`, `set-job-status`, `job-scheduler-stop`, `job-scheduler-start`, `run-workflow`, `cancel-workflow-run`, `set-workflow-status` | `save-job`, `delete-job`, `save-job-schedule`, `check-job`, `validate-job-transfer`, `save-job-transfer`, `save-workflow`, `delete-workflow`, `save-workflow-schedule`, `check-workflow` |
+| `jobs`        | view, operate, edit       | `get-jobs`, `get-job`, `get-job-catalogue`, `get-job-runs`, `get-job-run`, `get-job-versions`, `job-scheduler-status`, `-upcoming`, `-events`, `get-job-transfer-params`, `-catalogue`, `get-job-transfer`, `get-workflows`, `get-workflow`, `get-workflow-runs`, `get-workflow-run`, `get-workflow-versions`, `get-dependency-targets`, `get-external-tasks` | `run-job`, `cancel-job-run`, `set-job-status`, `job-scheduler-stop`, `job-scheduler-start`, `run-workflow`, `cancel-workflow-run`, `set-workflow-status` | `save-job`, `delete-job`, `save-job-schedule`, `check-job`, `validate-job-transfer`, `save-job-transfer`, `save-workflow`, `delete-workflow`, `save-workflow-schedule`, `check-workflow` |
 | `datasources` | view, edit                | PDI Core datasources, directories, incoming files, archive, grammars, viewer settings |                       | Their saves and deletes, lanes (`set-ds-active`), directories, grammars, viewer settings |
 | `files`       | view, operate             | The file log: `get-files-day`, `get-ds-file-log(-text)`, `search-files`, `get-pdi-state` | `set-file-status`, lane locks, `check-ds-upload`, `upload-ds-file`, `refresh-file-summary` | |
 | `instance`    | view, operate, edit       | `parameters`, health and sessions, `get-config-catalogue`, `get-config-changes`, `get-temp-tables` | `drop-temp-tables`                | `set-config-option`, `reload-config`              |
@@ -1581,6 +1581,17 @@ scheduled).
 * `POST /api/save-job-transfer`: body `{name, text, description, create}`: creates a param in the database, or changes
   one kept there; `create` refuses an existing name (`409`). A param kept in a file is not written here (`409`): it is
   changed in its file, or moved to the database on the Transfers page. An invalid param is `400`.
+
+#### Started outside rapo
+* `GET /api/get-external-tasks`: `rescan` (read the system again; the first call reads it when nothing was read yet): what the
+  crontab (Linux) or the Windows Task Scheduler starts, of the user the server runs as; see
+  [docs/jobs.md](../jobs.md#started-outside-rapo). Answers `{platform ('crontab', 'task_scheduler' or null), scanned (when it
+  was read), error (why it could not be read, else null), tasks}`; a task is `{source, name (Task Scheduler only), state,
+  schedule (words, or the cron expression), command, directory, user, next_fire, last_run, last_result (the code of the last
+  run, Task Scheduler only), jobs}`, where `jobs` are the names of the jobs of rapo whose main task it starts. Area *Jobs*,
+  View; there is no route that changes anything.
+* `get-jobs` and `get-job` give each job `external`: `[{source, schedule, name}]` for what starts its main task outside rapo,
+  from the last scan (empty until one was made).
 
 #### Dependencies
 A job or a workflow may wait for other runs (see [docs/jobs.md](../jobs.md#dependencies)). The condition is

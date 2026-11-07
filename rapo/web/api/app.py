@@ -51,6 +51,7 @@ from ...transfer.manager import manager as transfers
 from ...jobs import catalogue as job_catalogue
 from ...jobs import definition as job_definition
 from ...jobs import dependencies as job_dependencies
+from ...jobs import external as job_external
 from ...jobs import store as job_store
 from ...jobs.manager import manager as job_manager
 from ...jobs.workflow_manager import manager as workflow_manager
@@ -2774,6 +2775,32 @@ def present_job(row, last_run=None, next_fire=None, running=None):
     return job
 
 
+def jobs_outside():
+    """Get {job name: [what starts it outside rapo]} from the last scan of
+    the crontab or the Task Scheduler. A scan is started in the background
+    when there is none yet, so the lists know it soon after the start."""
+    job_external.scan_in_background()
+    entries = job_external.kept()['entries']
+    if not entries:
+        return {}
+    return job_external.of_jobs(entries, job_answer(job_store.read_definitions))
+
+
+@api.get('/get-external-tasks', dependencies=JOBS)
+def get_external_tasks(rescan: bool = False):
+    """Get what is started outside rapo, by the crontab (Linux) or the
+    Windows Task Scheduler, of the user the server runs as: every entry with
+    its schedule, command, next start and, when it starts what the main task
+    of a job runs, the `jobs`. Only read. The scan is kept; `rescan` reads
+    it again. `error` tells why the system could not be read."""
+    scan = job_external.scan() if rescan or \
+        job_external.kept()['entries'] is None else job_external.kept()
+    tasks = job_external.link(scan['entries'],
+                              job_answer(job_store.read_definitions))
+    return {'platform': job_external.platform(), 'scanned': scan['time'],
+            'error': scan['error'], 'tasks': tasks}
+
+
 def jobs_in_workflows():
     """Get {job name: [names of the workflows that have it as a step]};
     empty while the workflow tables are missing."""
@@ -2805,6 +2832,7 @@ def get_jobs():
     last = job_answer(job_store.read_last_runs)
     unmet = job_answer(job_store.read_unmet)
     waits = job_answer(job_store.read_waits_for)
+    outside = jobs_outside()
     fires = next_job_fires()
     in_workflows = jobs_in_workflows()
     jobs = []
@@ -2816,6 +2844,7 @@ def get_jobs():
         item['workflows'] = in_workflows.get(row['job_name'], [])
         item['unmet'] = unmet.get(row['job_id'])
         item['waits_for'] = waits.get(row['job_id'], [])
+        item['external'] = outside.get(row['job_name'], [])
         jobs.append(item)
     return {'jobs': jobs, 'manager': job_manager.status(),
             'scheduler': job_scheduler.status()['state']}
@@ -2833,6 +2862,7 @@ def get_job(name: str):
     answer = present_job(row, last, fires.get(row['job_id']), running)
     answer['workflows'] = jobs_in_workflows().get(row['job_name'], [])
     answer['unmet'] = job_answer(job_store.read_unmet).get(row['job_id'])
+    answer['external'] = jobs_outside().get(row['job_name'], [])
     return answer
 
 

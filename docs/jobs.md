@@ -20,6 +20,7 @@ The design and the reasons behind the choices are in [jobs-design.md](jobs-desig
 1. [Transfers in jobs](#transfers-in-jobs)
 1. [Workflows](#workflows)
 1. [Dependencies](#dependencies)
+1. [Started outside rapo](#started-outside-rapo)
 1. [Safety](#safety)
 1. [rapo.ini `[JOBS]`](#rapoini-jobs)
 1. [When a job does not run](#when-a-job-does-not-run)
@@ -255,6 +256,30 @@ workflow: ...*), without a mail.
 * The list says what a job or workflow **waits for** (hover for the windows).
 * No new access right: the *Jobs* area covers it. The names to pick from are read with `get-dependency-targets` (View).
 
+## Started outside rapo
+
+The **External** tab of the *Jobs* page lists what the **crontab** (Linux) or the **Windows Task Scheduler** of the server
+starts, so that everything that runs on the server can be seen in one place. It is **read only**: rapo never changes the
+crontab or a task. It is always on the page (there is no switch).
+
+* **What is listed.** Every entry of the crontab of the **user the server runs as** (`crontab -l`; the comments, the
+  assignments and a line that is not an entry are left out; `@reboot` has no next start), or every task of the Task
+  Scheduler that **runs as that user** (the tasks of the system and of other users are not listed). A task shows its name and
+  folder, state, triggers in words, next start, the program and arguments, the folder it starts in, and the result of its
+  last run (`0` is success); a crontab entry shows its expression, command and the next start computed from it, and has no
+  history. The command is shown in full, so anyone who may see the *Jobs* page can read it: do not keep passwords in it.
+* **When it is read.** The first time the tab is opened after the page was loaded, and then only with **Rescan**. A scan is
+  also started in the background the first time the job list is read, so the jobs know soon what starts them. The Task
+  Scheduler is read with PowerShell (about a second); if it is not there, or the crontab can not be read, the tab says so.
+* **Linked to a job.** An entry is linked to a job of rapo when it starts what the **main task** of the job runs: its
+  script (`file`), its program (`path`, or the program a `COMMAND` starts when it is given by its path), or its **transfer
+  param**. The command is searched, and the scripts it runs (files it names, read two levels deep, as for the transfers).
+  A job with SQL, or with a script typed into the editor, has nothing to be found by.
+* **On the job.** A linked job says **Also started outside rapo** in the list and in its editor, with what starts it. If it
+  has a schedule in rapo as well, it runs twice: keep one of them.
+* **Not in a dependency.** What starts outside rapo can not be waited for by a condition *Run status*: rapo does not know how
+  it ended.
+
 ## Safety
 
 A job runs programs as the user rapo runs as, and SQL as the schema owner. What limits it:
@@ -302,6 +327,6 @@ See `rapo.ini.example`; the options can be changed on the *Configuration* tab of
 
 ## Not yet
 
-A workflow has no branching, no parallel steps, and no step that goes on after a failure. The jobs that start outside rapo (the crontab, the
-Windows Task Scheduler) are not listed, as the transfers started by the crontab are. The `SHELL` type and the paths for a
-Linux server are written but have so far been run on Windows only.
+A workflow has no branching, no parallel steps, and no step that goes on after a failure. What the crontab and the Task
+Scheduler start is listed but can not be changed from rapo or waited for. The `SHELL` type, the crontab reading and the paths
+for a Linux server are written but have so far been run on Windows only.

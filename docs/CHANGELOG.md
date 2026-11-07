@@ -6,6 +6,16 @@ The full notes and upgrade steps of each release are in `migrations/<version>/` 
 
 ---
 
+## v0.12.0 — 2026-11-07
+
+No database change and no new option: there is no `upgrade.sql`. Update the source, reinstall and restart (`migrations/v0.12.0/README.md`).
+
+- **External tab on the Jobs page**: what the crontab (Linux) or the Windows Task Scheduler of the server starts, of the user the server runs as, read only: schedule, next start, the whole command, and for Windows the state and the result of the last run ([docs/jobs.md](jobs.md#started-outside-rapo)). It is read when the tab is first opened, and again with *Rescan*.
+- **Linked to the jobs**: an entry that starts what the main task of a job runs (its script, program or transfer param) names the job, and the job says in the list and in its editor that it is also started outside rapo.
+- **API**: `get-external-tasks` (area *Jobs*, View) and `external` in `get-jobs` and `get-job` ([docs/api](api/README.md#started-outside-rapo)).
+
+---
+
 ## v0.11.0 — 2026-11-07
 
 No database change and no new option: there is no `upgrade.sql`. Update the source, reinstall and restart (`migrations/v0.11.0/README.md`).

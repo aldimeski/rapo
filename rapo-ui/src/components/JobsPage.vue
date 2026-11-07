@@ -21,10 +21,14 @@
         <q-tab name="jobs" :label="`Jobs${data ? ' (' + data.jobs.length + ')' : ''}`" icon="fas fa-cog" />
         <q-tab name="workflows" :label="`Workflows${workflows ? ' (' + workflows.length + ')' : ''}`" icon="fas fa-stream" />
         <q-tab v-if="transfersTab" name="transfers" label="Transfers" icon="fas fa-exchange-alt" />
+        <q-tab name="external" label="External" icon="fas fa-calendar-alt">
+          <q-tooltip>What the crontab or the Windows Task Scheduler of the server starts outside rapo</q-tooltip>
+        </q-tab>
       </q-tabs>
       <q-separator />
       <workflows-panel v-if="tab === 'workflows'" :workflows="workflows" :error="workflowError" @reload="load()" />
       <transfers-panel v-else-if="tab === 'transfers'" />
+      <external-panel v-else-if="tab === 'external'" />
       <template v-else>
       <div class="row items-center q-pa-sm q-gutter-sm">
         <q-input v-model="search" dense outlined clearable debounce="200" placeholder="Search job or description" class="col-4">
@@ -70,6 +74,10 @@
 <div v-if="row.waits_for && row.waits_for.length" class="text-grey-7 text-caption">
                 <q-icon name="fas fa-hourglass-half" size="10px" class="q-mr-xs" />Waits for {{ row.waits_for.map((target) => `${target.type} ${target.name}`).join(", ") }}
                 <q-tooltip><div v-for="target in row.waits_for" :key="target.type + target.name">{{ targetText(target) }}</div></q-tooltip>
+              </div>
+              <div v-if="row.external && row.external.length" class="text-deep-orange-9 text-caption">
+                <q-icon name="fas fa-calendar-alt" size="10px" class="q-mr-xs" />Also started outside rapo ({{ [...new Set(row.external.map((item) => (item.source === "crontab" ? "crontab" : "Task Scheduler")))].join(", ") }})
+                <q-tooltip><div v-for="(item, index) in row.external" :key="index">{{ item.name || item.schedule }}<template v-if="item.name"> &middot; {{ item.schedule }}</template></div></q-tooltip>
               </div>
               <div v-if="row.workflows && row.workflows.length" class="text-grey-7 text-caption">
                 <q-icon name="fas fa-stream" size="10px" class="q-mr-xs" />In {{ row.workflows.length === 1 ? "workflow" : "workflows" }} {{ row.workflows.join(", ") }}
@@ -159,6 +167,7 @@
 <script>
 import { mapActions, mapState } from "vuex";
 import DateTimeText from "./DateTimeText.vue";
+import ExternalPanel from "./ExternalPanel.vue";
 import JobRunDialog from "./JobRunDialog.vue";
 import JobRunsDialog from "./JobRunsDialog.vue";
 import JobSchedulerBar from "./JobSchedulerBar.vue";
@@ -178,11 +187,11 @@ import { targetText } from "../utils/job";
 const REFRESH_SECONDS = 10;
 
 export default {
-  components: { DateTimeText, JobRunDialog, JobRunsDialog, JobSchedulerBar, LoadErrorNotice, SkeletonRows, TransfersPanel, WorkflowsPanel },
+  components: { DateTimeText, ExternalPanel, JobRunDialog, JobRunsDialog, JobSchedulerBar, LoadErrorNotice, SkeletonRows, TransfersPanel, WorkflowsPanel },
   data() {
     return {
       // The tab is in the address (?tab=workflows), so a link and a reload keep it.
-      tab: ["workflows", "transfers"].includes(this.$route.query.tab) ? this.$route.query.tab : "jobs",
+      tab: ["workflows", "transfers", "external"].includes(this.$route.query.tab) ? this.$route.query.tab : "jobs",
       data: null,
       // get-workflows, or null while they load; and why they could not be read (the tables of v0.10.0 may be missing).
       workflows: null,

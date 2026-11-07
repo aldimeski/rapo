@@ -193,6 +193,21 @@ def waits_for(condition):
     return []
 
 
+def read_definitions():
+    """Get [{'job_name', 'definition' (a dict)}] of every job, for finding
+    what starts a job outside rapo."""
+    rows = _execute(sa.select(job_table.c.job_name, job_table.c.definition),
+                    as_table=True)
+    found = []
+    for row in rows:
+        try:
+            found.append({'job_name': row['job_name'], 'definition':
+                          json.loads(_text(row['definition']))})
+        except ValueError:
+            continue
+    return found
+
+
 def read_waits_for():
     """Get {job_id: [targets]} of the jobs whose condition waits for other
     runs, for the list."""

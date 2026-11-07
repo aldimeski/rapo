@@ -57,6 +57,12 @@
             <!-- General -->
             <q-tab-panel name="general">
               <div class="q-ma-lg q-gutter-y-md panel-width">
+                <q-banner v-if="external.length" dense class="bg-deep-orange-1 text-deep-orange-10">
+                  <template #avatar><q-icon name="fas fa-calendar-alt" size="16px" color="deep-orange" /></template>
+                  The main task of this job is also started <strong>outside rapo</strong>:
+                  <span v-for="(item, index) in external" :key="index"><template v-if="index">; </template>{{ item.source === "crontab" ? "crontab" : "Task Scheduler" }} <code>{{ item.name || item.schedule }}</code><template v-if="item.name"> ({{ item.schedule }})</template></span>.
+                  If the job has a schedule here too, it runs twice.
+                </q-banner>
                 <q-banner v-if="workflows.length" dense class="bg-indigo-1 text-indigo-10">
                   <template #avatar><q-icon name="fas fa-stream" size="16px" color="indigo" /></template>
                   This job is a step of the workflow{{ workflows.length === 1 ? "" : "s" }} <strong>{{ workflows.join(", ") }}</strong>. It keeps its own schedule and can still be run by hand. Inside a workflow its e-mail address is not used: the workflow
@@ -285,6 +291,8 @@ export default {
       savedJson: "",
       // The workflows that have the job as a step.
       workflows: [],
+      // What starts the main task of the job outside rapo (the last scan of the crontab or the Task Scheduler).
+      external: [],
       // The version of the job as saved, and the versions read for the Versions tab.
       version: 0,
       versions: null,
@@ -401,6 +409,7 @@ export default {
       };
       this.version = job.version;
       this.workflows = job.workflows || [];
+      this.external = job.external || [];
       this.shown = {};
       this.savedJson = JSON.stringify(this.form);
     },
