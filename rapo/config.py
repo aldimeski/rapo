@@ -170,9 +170,13 @@ class Configurator(dict):
         Raises ConfigConflict when the file's checksum is not
         `expected_digest`. Returns the path of the backup.
         """
-        with open(path, 'r', encoding=encoding) as file:
-            text = file.read()
-        digest = hashlib.sha256(text.encode(encoding)).hexdigest()
+        # Read as it is on disk (no newline translation), so that the checksum
+        # equals digest() and the line endings of the file are kept.
+        with open(path, 'r', encoding=encoding, newline='') as file:
+            raw = file.read()
+        digest = hashlib.sha256(raw.encode(encoding)).hexdigest()
+        newline = '\r\n' if '\r\n' in raw else '\n'
+        text = raw.replace('\r\n', '\n')
         if expected_digest and expected_digest != digest:
             raise ConfigConflict(f'{path} changed meanwhile')
         lines = text.split('\n')
@@ -224,12 +228,13 @@ class Configurator(dict):
             content += '\n'
         if content == text:
             return None
+        content = content.replace('\n', newline)
         backup = self.backup()
         mode = os.stat(path).st_mode & 0o7777
         folder = os.path.dirname(path)
         handle, temporary = tempfile.mkstemp(prefix='.rapo.ini.', dir=folder)
         try:
-            with os.fdopen(handle, 'w', encoding=encoding) as file:
+            with os.fdopen(handle, 'w', encoding=encoding, newline='') as file:
                 file.write(content)
             os.chmod(temporary, mode)
             os.replace(temporary, path)

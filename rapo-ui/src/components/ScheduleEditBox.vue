@@ -7,13 +7,7 @@
         emit-value
         map-options
         v-model="scheduleType"
-        :options="[
-          { label: 'Daily', value: 'D' },
-          { label: 'Weekly', value: 'W' },
-          { label: 'Monthly', value: 'M' },
-          { label: 'Complex', value: 'X' },
-          { label: 'Cascade', value: 'C' },
-        ]"
+        :options="typeOptions"
         label="Scheduler type"
         @update:model-value="scheduleTypeChanged" />
 
@@ -278,6 +272,8 @@ export default {
   // modelValue is the parent's schedule object and is edited in place.
   props: {
     modelValue: { type: Object, required: true },
+    // Cascade (run after another control) only makes sense for a control; a file transfer has none.
+    cascade: { type: Boolean, default: true },
   },
   data() {
     return {
@@ -322,6 +318,15 @@ export default {
     ...mapState(["controlCatalogue"]),
     scheduleObject() {
       return this.modelValue;
+    },
+    typeOptions() {
+      const options = [
+        { label: "Daily", value: "D" },
+        { label: "Weekly", value: "W" },
+        { label: "Monthly", value: "M" },
+        { label: "Complex", value: "X" },
+      ];
+      return this.cascade ? [...options, { label: "Cascade", value: "C" }] : options;
     },
     // The selected trigger stays in the list while filtering, so the select can show its name instead of its id.
     triggerOptions() {
@@ -423,7 +428,9 @@ export default {
   mounted() {
     this.initSchedule();
     this.schedulePreview();
-    this.updateControlCatalogue().catch((error) => notifyError("Failed to load controls.", error));
+    if (this.cascade) {
+      this.updateControlCatalogue().catch((error) => notifyError("Failed to load controls.", error));
+    }
   },
   unmounted() {
     clearTimeout(this.previewTimer);

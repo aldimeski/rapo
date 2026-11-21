@@ -54,6 +54,12 @@ export default {
     context.commit("updateSchedulerStatus", data);
     return data;
   },
+  // The state of the job scheduler and the job manager, for the Jobs page and the header.
+  async updateJobSchedulerStatus(context) {
+    const data = await api("job-scheduler-status", { loadingBar: false });
+    context.commit("updateJobSchedulerStatus", data);
+    return data;
+  },
   // Reference catalogue of KPI types. Empty when the RACS KPI tables are not deployed, which is also what
   // hides the KPIs tab of the control editor. Force is for the KPI types page, which edits the catalogue:
   // without it the first snapshot of the session would keep being served to every reader of it.

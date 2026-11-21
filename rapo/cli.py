@@ -23,7 +23,8 @@ def run_scheduler():
             except OSError:
                 pass
             table = db.tables.scheduler
-            db.execute(table.update().values(status='N'))
+            db.execute(table.update().where(
+                table.c.id == 'RAPO.SCHEDULER').values(status='N'))
             print(f'Standalone scheduler at PID {record["pid"]} stopped.')
             return
     print('rapo-scheduler is deprecated: the scheduler runs inside the web '
@@ -39,7 +40,7 @@ def run_server():
     dev = 'dev' in actions
     # A reload restarts the scheduler with every change, so development
     # servers run without it unless asked to.
-    scheduler = False if dev and '--scheduler' not in argv else None
+    scheduler = '--scheduler' in argv if dev else None
     server = Server(dev=dev, scheduler=scheduler)
     if action == 'start':
         server.start()

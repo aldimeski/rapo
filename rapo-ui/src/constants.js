@@ -73,6 +73,8 @@ export const RUN_STATUSES = {
   E: { label: "Error", icon: "fas fa-exclamation-circle", color: "deep-orange" },
   C: { label: "Canceled", icon: "fas fa-times-circle", color: "brown-4" },
   X: { label: "Revoked", icon: "fas fa-times-circle", color: "grey" },
+  // A step of a workflow run that was not run because an earlier step stopped the workflow.
+  K: { label: "Skipped", icon: "fas fa-forward", color: "grey-5" },
 };
 
 export const RUN_STATUS_OPTIONS = Object.entries(RUN_STATUSES).map(([value, status]) => ({ label: status.label, value }));
@@ -122,6 +124,7 @@ export const TRIGGER_TYPES = {
   ITERATION: { label: "Iteration", icon: "fas fa-redo", color: "indigo-4" },
   CASCADE: { label: "Cascade", icon: "fas fa-sitemap", color: "deep-purple-4" },
   UPSTREAM: { label: "Chain", icon: "fas fa-link", color: "cyan-8" },
+  WORKFLOW: { label: "Workflow", icon: "fas fa-stream", color: "indigo-5" },
 };
 
 export const TRIGGER_TYPE_OPTIONS = Object.entries(TRIGGER_TYPES).map(([value, type]) => ({ label: type.label, value }));
@@ -138,6 +141,48 @@ export const SCHEDULER_STATES = {
 export function schedulerState(state) {
   return SCHEDULER_STATES[state] || { label: state || "Unknown", color: "grey", description: "" };
 }
+
+// The state of the job scheduler (job-scheduler-status), worded for the jobs.
+export const JOB_SCHEDULER_STATES = {
+  running: { label: "Running", color: "teal", description: "This server schedules the jobs." },
+  standby: { label: "Standby", color: "blue-grey", description: "Another server schedules the jobs, this one takes over if it stops." },
+  starting: { label: "Starting", color: "amber-8", description: "The job scheduler is acquiring its lease." },
+  stopped: { label: "Stopped", color: "deep-orange", description: "The job scheduler was stopped from the UI on all servers." },
+  off: { label: "Off", color: "grey", description: "The job scheduler is disabled for this server (rapo.ini or development mode)." },
+};
+
+export function jobSchedulerState(state) {
+  return JOB_SCHEDULER_STATES[state] || { label: state || "Unknown", color: "grey", description: "" };
+}
+
+// What the main task of a job is (rapo_job.job_type).
+export const JOB_TYPES = {
+  SQL: { label: "SQL", icon: "fas fa-database", color: "indigo-5" },
+  TRANSFER: { label: "Transfer", icon: "fas fa-exchange-alt", color: "teal-6" },
+  EXECUTABLE: { label: "Program", icon: "fas fa-cog", color: "blue-grey-6" },
+  COMMAND: { label: "Command", icon: "fas fa-terminal", color: "blue-grey-7" },
+  PYTHON: { label: "Python", icon: "fas fa-code", color: "blue-7" },
+  PERL: { label: "Perl", icon: "fas fa-code", color: "deep-purple-4" },
+  SHELL: { label: "Shell", icon: "fas fa-terminal", color: "green-8" },
+  BATCH: { label: "Batch", icon: "fas fa-file-code", color: "amber-9" },
+  POWERSHELL: { label: "PowerShell", icon: "fas fa-terminal", color: "light-blue-8" },
+};
+
+export function jobType(type) {
+  return JOB_TYPES[type] || { label: type || "Unknown", icon: "fas fa-question-circle", color: "grey" };
+}
+
+// A workflow run that was stopped because a step's condition was not met (or the step was canceled) ends canceled, and
+// is shown as a warning, not as a cancel by the user.
+export function workflowRunStatus(run) {
+  if (run && run.status === "C" && String(run.message || "").startsWith("Stopped at ")) {
+    return { label: "Stopped", icon: "fas fa-exclamation-triangle", color: "amber-8" };
+  }
+  return runStatus(run && run.status);
+}
+
+// The parts of a run in order: where it got to (rapo_job_run.stage).
+export const JOB_STAGES = { PRE: "Pre", CONDITION: "Condition", MAIN: "Main", POST: "Post" };
 
 // How often a control runs (utils/schedule.js scheduleFrequency, plus chain for a control only pulled by the
 // controls reading its results): the avatar color of the Controls schedule column. Its icon is the source of the next

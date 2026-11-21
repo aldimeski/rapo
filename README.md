@@ -27,8 +27,9 @@ for reconciliation controls, results sent per email, and a KPI catalogue editor.
 [migrations/v0.8.3](migrations/v0.8.3/CHANGELOG.md),
 [migrations/v0.8.4](migrations/v0.8.4/CHANGELOG.md),
 [migrations/v0.8.5](migrations/v0.8.5/CHANGELOG.md),
-[migrations/v0.8.6](migrations/v0.8.6/CHANGELOG.md) and
-[migrations/v0.8.7](migrations/v0.8.7/CHANGELOG.md), and summarized in [docs/CHANGELOG.md](docs/CHANGELOG.md).
+[migrations/v0.8.6](migrations/v0.8.6/CHANGELOG.md),
+[migrations/v0.8.7](migrations/v0.8.7/CHANGELOG.md) and
+[migrations/v0.8.7.5](migrations/v0.8.7.5/CHANGELOG.md), and summarized in [docs/CHANGELOG.md](docs/CHANGELOG.md).
 
 Both upstream projects are MIT-licensed, and so is this one. [NOTICE](NOTICE) records what comes from where.
 
@@ -80,6 +81,17 @@ If you are a young RA Team or looking for some alternatives, try Rapo because:
 * **Results per email**. A control can mail its results when a run finishes: recipients, a subject and body with
   run variables, and an Excel file of the run's rows, filtered and with the fields you choose. SMTP is set once in
   the `[EMAIL]` section of `rapo.ini`.
+* **Jobs**. SQL, transfers, programs and scripts (Python, Perl, shell, batch, PowerShell) run on a schedule of their
+  own, independent of the controls: each job has a pre part, a condition, a main task and a post part, parameters with
+  secrets, a timeout, an e-mail on failure and versions. The *Jobs* page lists, runs and edits them
+  ([guide](docs/jobs.md), [design](docs/jobs-design.md)). Jobs can be chained into **workflows**: jobs run one after
+  another, stopping at the first one that does not succeed, and a job or a workflow can **wait for** other runs (a
+  control, a transfer, a job or a workflow ended well today, in the last hours, or for a day's data). The *External* tab
+  lists what the crontab or the Windows Task Scheduler of the server starts, and says which jobs are also started that way.
+* **File transfers**. The logic of [filetransfer-py](https://github.com/aldimeski/filetransfer-py) runs inside rapo:
+  files are copied or moved from a local directory or an SFTP server to one or more target directories. A param is a
+  `.param` file or a row of the database, is scheduled by rapo or found in the crontab (Linux), and the *Transfers*
+  tab of the Jobs page lists them all with their next start ([guide](docs/transfer.md)).
 * **Logs you can read**. One file per control run under `controls/<control_id>/<process_id>.log`, everything else
   in `rapo-server_YYYYMMDD.log`, both cleaned up on a retention of their own and both reachable from the UI.
 * **A documented web API** ([reference](docs/api/README.md)) for reports, dashboards and scripts outside this

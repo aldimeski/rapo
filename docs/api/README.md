@@ -53,6 +53,7 @@ A scope is a level per area; a level includes the ones below it (`none` < `view`
 | `controls`    | view, edit                | `get-all-controls`, `get-schema-drift`, `get-control-versions`, datasource and view reads, `schedule-preview`, `get-next-fires` | | `save-control`, `delete-control`, schema update/recreate/check, orphan and output table drops, version deletes, `send-test-email`, `compile-view` |
 | `kpis`        | view, operate, edit       | KPI types, a control's KPIs, KPI history and runs, orphan list | `calculate-kpi`, `reingest-kpis`                           | `save-kpi-type`, `delete-kpi-type`, orphan KPI deletes/reassigns |
 | `scheduler`   | view, operate             | `scheduler-status`, `-upcoming`, `-events`, `get-missed-fires` | `scheduler-stop`, `scheduler-start`                        |                                                   |
+| `jobs`        | view, operate, edit       | `get-jobs`, `get-job`, `get-job-catalogue`, `get-job-runs`, `get-job-run`, `get-job-versions`, `job-scheduler-status`, `-upcoming`, `-events`, `get-job-transfer-params`, `-catalogue`, `get-job-transfer`, `get-workflows`, `get-workflow`, `get-workflow-runs`, `get-workflow-run`, `get-workflow-versions`, `get-dependency-targets`, `get-external-tasks` | `run-job`, `cancel-job-run`, `set-job-status`, `job-scheduler-stop`, `job-scheduler-start`, `run-workflow`, `cancel-workflow-run`, `set-workflow-status` | `save-job`, `delete-job`, `save-job-schedule`, `check-job`, `validate-job-transfer`, `save-job-transfer`, `save-workflow`, `delete-workflow`, `save-workflow-schedule`, `check-workflow` |
 | `datasources` | view, edit                | PDI Core datasources, directories, incoming files, archive, grammars, viewer settings |                       | Their saves and deletes, lanes (`set-ds-active`), directories, grammars, viewer settings |
 | `files`       | view, operate             | The file log: `get-files-day`, `get-ds-file-log(-text)`, `search-files`, `get-pdi-state` | `set-file-status`, lane locks, `check-ds-upload`, `upload-ds-file`, `refresh-file-summary` | |
 | `instance`    | view, operate, edit       | `parameters`, health and sessions, `get-config-catalogue`, `get-config-changes`, `get-temp-tables` | `drop-temp-tables`                | `set-config-option`, `reload-config`              |
@@ -65,7 +66,8 @@ rule is `ROUTES` and `ALSO` in `rapo/web/api/scopes.py`. A route without a scope
 **Free SQL** is a flag apart from the areas, needed by every route that takes SQL text: `validate-sql`,
 `validate-kpi-sql`, `check-view`, `preview-view`, `compile-view`, `check-control-schema`, `save-control`,
 `save-kpi-type` and `calculate-kpi` with a draft statement. `controls: edit` and `kpis: edit` need it (their SQL runs
-as the schema owner). Without it, a raw `where` of `analysis-start(-file)` and `validate-analysis-where` may only be a
+as the schema owner). `save-job` needs it for a job with SQL in it (a SQL task or a SQL condition), which runs as the
+schema owner too; `jobs: edit` alone saves the jobs without SQL. Without it, a raw `where` of `analysis-start(-file)` and `validate-analysis-where` may only be a
 plain filter of the dataset's columns: no subquery, no `.`/`@`, no `;`, no comments or q-quoted literals, functions out of a short list (`to_char`,
 `substr`, `trunc`, `nvl`, `cast`, ...), as the discrepancy analysis' links write them.
 
@@ -1383,6 +1385,273 @@ The next fires of a schedule configuration, without saving it.
 
 Answers a list of datetimes, `[]` for a schedule that never fires. `422` when the configuration cannot be parsed.
 
+### File transfers
+
+The file transfers of `rapo/transfer/` (see [docs/transfer.md](../transfer.md)). While `[TRANSFER] enabled` is off
+(the default) every route below answers `404` with a note to switch the transfers on; `GET /api/info` tells it as
+`transfers_available`. Reads need *Datasources: View*, the
+routes that change a param or its schedule *Datasources: Edit*, `run-transfer` and `cancel-transfer` *Files: Operate*.
+A failed request answers its `detail` with `400` (a bad name or value), `404` (no such param or run), `409` (the name is
+taken, the param is in both places, or it is running or waiting), `422` (the param does not validate) or `503` (the
+transfer tables are missing: run `migrations/v0.8.7.5/upgrade.sql`).
+
+#### `GET /api/get-transfers`
+Every param with where it is kept and how it is started. With `rescan=true` the crontab is read again instead of
+reusing the last scan (`[TRANSFER] crontab_scan_interval`). The answer:
+
+* `params` - per param `param_name`, `source` (`file`, `db`, `both` when the name is in both places, `external` when
+  only the crontab knows it), `description`, `modified`, `size`, `scheduling` (`rapo`, `crontab`, `both` or null),
+  `rapo` (null, or `{config, enabled, scheduled, next_fire}`: the schedule units JSON of `schedule_config`),
+  `crontab` (a list of `{cron, command, script, param_path, next_fire, user}`; `script` is null when the cron command
+  calls the transfer script itself), `running` (a run waits or runs on this server) and `last_run`;
+* `param_dir`, `database_available`, `crontab_scan`, `crontab_supported` (the host is Linux);
+* `scheduler` - `{state, leader}` as `scheduler-status` reports them; `manager` - `{runner, active, capacity, queued,
+  running}` of this server's transfer manager.
+
+#### `GET /api/get-transfer-catalogue`
+The parameters a transfer can have, in the order they are written, which the param editor is built from: `groups` and
+`parameters`, each `{name, group, kind (flag, choice, path, paths, regex, date, number, text), default, required,
+choices, description, storage, ignored_when}`. `storage` is `db` for a parameter only a param kept in the database can
+have (`LogDatabase`); `ignored_when` is `[parameter, value]` while which the parameter has no effect (`LogDir` and
+`LogFile` while `LogDatabase` is `Y`).
+
+#### `GET /api/get-transfer`
+`name` - the `text` of a param, its `source`, its `description` (database params) and its `schedule` in rapo
+(`{config, enabled}` or null).
+
+#### `POST /api/validate-transfer`
+Body `{text, now}`: checks the text of a param without saving it and answers what the date tokens of `FileMask` and
+`FileCreationDate` expand to at `now` ("YYYY-MM-DD HH:MM:SS", default the current time), with the directories.
+`422` names the first problem.
+
+#### `POST /api/save-transfer`
+Body `{name, text, where, description, create}`: saves a param to a `file` (in `[TRANSFER] param_dir`) or to the
+database (`db`). `create` refuses a name that exists. A name that exists in the other place is refused (`409`): move
+it instead. The text is validated first.
+
+#### `GET /api/check-move-transfer`
+`name`, `target`: what moving a param changes. `warnings` need a confirmation: a param moved from the database to a
+file that has no `LogDir` and `LogFile` has no logging there, and `LogMode` becomes `None`. `notes` only tell: a param
+moved to a file loses `LogDatabase`.
+
+#### `POST /api/move-transfer`
+`name`, `target` (`file` or `db`), `confirm` (false): moves a param, keeping its schedule. `409` while the move has
+warnings (see `check-move-transfer`) and `confirm` is not true.
+
+#### `DELETE /api/delete-transfer`
+`name`: deletes a param (its file or its row) and its schedule; the history of its runs stays. `409` while a run
+waits or runs.
+
+#### `POST /api/save-transfer-schedule`
+Body `{name, schedule, enabled}`: `schedule` holds the units `{mday, wday, hour, min, sec}` of a control schedule
+(see `schedule_config`), or is null for no schedule in rapo. The scheduler of the server holding the lease starts the
+transfer, rapo performs it.
+
+#### `POST /api/run-transfer`
+`name`: initiates a run and queues it; answers `{run_id}`. `409` when the param already waits or runs.
+
+#### `POST /api/cancel-transfer`
+`run_id`: cancels a waiting or running transfer of this server; `404` for a run of another server or one that ended.
+
+#### `GET /api/get-transfer-runs`
+`name` (optional), `limit` (100): the runs, latest first, as `{run_id, param_name, trigger_type, scheduled_time,
+queued_time, start_time, end_time, status, transferred, failed, message, runner, requested_by, log_lines}`. `trigger_type` is
+`schedule` or `manual`; `status` is `I` initiated, `S` running, `D` done, `E` error or `C` canceled.
+
+#### `GET /api/get-transfer-run`
+`run_id`: one run with its `run_log`, the lines the transfer logged. For a param with `LogDatabase:Y` they are read from
+`rapo_transfer_log`: `log_lines` is the number of lines the run logged and `log_trimmed` is true when fewer are left
+because only the newest `[TRANSFER] log_max_lines` lines of the param are kept.
+### Jobs
+
+The jobs of `rapo/jobs/` (RAJO, see [docs/jobs-design.md](../jobs-design.md)): a job is SQL, a transfer, a program or a
+script, with a part before it (`pre`), a condition, the work (`main`) and a part after it (`post`), started by a job
+scheduler of its own or by hand. While `[JOBS] enabled` is off every route below answers `404`; `GET /api/info` tells
+it as `jobs_available`. Reads need *Jobs: View*, starting and canceling a run and switching a job or the job scheduler
+*Jobs: Operate*, creating, changing and deleting a job *Jobs: Edit* (it runs programs as the user rapo runs as, so
+only the full token has it by default; a job with SQL also needs Free SQL). A failed request answers its `detail`
+with `400` (a bad name, value or parameter), `404` (no such job or run), `409` (the name is taken, the job is running
+or waiting, or the run belongs to another server), `422` (the definition does not validate) or `503` (the job tables
+are missing: run `migrations/v0.8.7.5/upgrade.sql`, or the job manager is not running).
+
+A job is `{job_id, job_name, description, job_type (of its main task), status ('Y' on, 'N' off), schedule_config (the
+JSON of a control schedule), notify_email, version, created_*, updated_*, definition}`. The `definition` is an object
+(see the design document): `pre`, `condition`, `main`, `post`, `parameters` (`{name, value, secret}`), `timeout` and
+`overlap`. **The value of a secret parameter is never sent**: it is `********`, and a save that sends it back so keeps
+the stored one (a hidden value of a parameter that has none is refused with `422`).
+
+#### `GET /api/get-jobs`
+Every job without its definition, each with `last_run`, `next_fire` (null when it is off or not scheduled) and
+`running` (a run waits or runs); `manager` - `{runner, active, enabled, capacity, queued, running}` of this server's job
+manager; `scheduler` - the state of the job scheduler.
+
+#### `GET /api/get-job`
+`name`: one job with its `definition`, `last_run`, `next_fire` and `running`.
+
+#### `GET /api/get-job-catalogue`
+What a job can be on this server: `platform` (`windows` or `linux`), `types` (every type of the OS, each `{type, kind,
+description, available, reason}`: not available when it is not in `[JOBS] enabled_types` or its interpreter was not
+found), `condition_kinds`, `overlaps`, `allowed_dirs`, `timeout` (the default), `max_output_kb`, `email_enabled`,
+`default_email` (whether `[JOBS] default_email` is set) and `variables` (the variables of every run).
+
+#### `POST /api/check-job`
+Body `{definition}` (an object or JSON text): checks a definition without saving or running it, as this server would
+at a run: the types of the OS and `enabled_types`, interpreters, script and program files (they must exist and be below
+`[JOBS] allowed_dirs`), SQL (only DML and PL/SQL), conditions, transfer arguments, parameters, `timeout` and `overlap`.
+Answers `{ok, problems, job_type, definition}`, `definition` being the one with its defaults filled in; a definition
+that does not read at all answers `ok` false with its problem.
+
+#### `POST /api/save-job`
+Body `{name, definition, description, notify_email, status, schedule, create}`: creates a job, or changes it (the name
+is not changed). `description`, `notify_email` (addresses separated by `,` or `;`), `status` and `schedule` (the units
+of `save-job-schedule`, `null` for none) stay as they were when not given; `create` refuses an existing name (`409`). The definition is validated as `check-job` does, without the files
+having to exist yet. A change of the definition makes a new version. Answers the job.
+
+#### `DELETE /api/delete-job`
+`name`, `confirm` (false): deletes a job and its versions; its runs stay until `[JOBS] history_retention_days` ends. `409`
+while a run of it is running or waiting. `409` too while the job is a step of **workflows**, until `confirm` is true; the
+message names them (`get-jobs` and `get-job` list them as `workflows`). With `confirm` the job is taken out of their steps,
+a new version of each, and a workflow left without steps is switched off; the answer lists them as
+`workflows: [{workflow_name, steps (left), switched_off}]`.
+
+#### `POST /api/set-job-status`
+`name`, `enabled`: switches a job on or off. An off job is not scheduled, a manual run is still possible. Not a new
+version.
+
+#### `POST /api/save-job-schedule`
+Body `{name, schedule}`: sets the schedule of a job, the units of a control schedule `{mday, wday, hour, min, sec}`
+(`*`, `N`, `/N`, `N-M`, `N,M`); no units: not scheduled. A new version. Answers the job.
+
+#### `POST /api/run-job`
+`name`; optional body `{parameters: {name: value}}` giving other values of the job's parameters for this run only (an
+unknown name is `400`). Initiates a run and queues it; answers `{run_id}`. A job that is running or waiting is refused
+(`409`) unless its `overlap` is `queue` (the run waits for the previous one) or `allow`.
+
+#### `POST /api/cancel-job-run`
+`run_id`: cancels a waiting or running run of this server, killing its process with everything it started; the run
+ends `C`. `409` for a run of another server, `404` for one that has finished.
+
+#### `GET /api/get-job-runs`
+`name` (all jobs when omitted), `limit` (100): the runs, latest first, without their log: `run_id`, `job_id`,
+`job_name`, `trigger_type` (`schedule`, `manual`), `scheduled_time`, `queued_time`, `start_time`, `end_time`, `status`
+(`I` waiting, `S` running, `D` done, `E` error, `C` canceled: the condition was not met, a start was skipped because
+the job was still running, or the run was canceled), `stage` (the last part started: `PRE`, `CONDITION`, `MAIN`,
+`POST`), `condition_value`, `exit_code` (of `main`), `message`, `runner`, `requested_by`, `definition_version`,
+`log_lines`, `mail_status` (what became of the failure e-mail of an error).
+
+#### `GET /api/get-job-run`
+`run_id`: one run with its log: `lines` (`{time, level, stream, text}`; `stream` is `out` or `err` for what the program
+wrote and `rapo` for what rapo says) and `run_log`, their text joined; secret values are replaced by `***`.
+`log_trimmed` tells that the oldest lines were deleted to keep the newest `[JOBS] log_max_lines` of the job.
+
+#### `GET /api/get-job-versions`
+`name`: the versions of a job, the newest first: `version`, `definition`, `schedule_config`, `updated_date`,
+`updated_by`.
+
+#### `GET /api/job-scheduler-status`
+The state of the job scheduler (`off`, `stopped`, `running`, `standby`, `starting`), the holder of its lease, the
+number of scheduled jobs, the last fire and the job `manager` of this server. It is independent of `scheduler-status`.
+
+#### `POST /api/job-scheduler-stop`, `POST /api/job-scheduler-start`
+Stop the job scheduler for every server, or start it again from now on (`409` when it is switched off for this server
+in `rapo.ini`). The scheduler of the controls is not touched.
+
+#### `GET /api/job-scheduler-upcoming`
+`hours` (24), `job_name`, `workflow_name`: the fires of the jobs and the workflows that are on, in order:
+`[{scheduled_time, kind ('job' or 'workflow'), job_name, workflow_name}]`. A name narrows to that job or workflow.
+
+#### `GET /api/job-scheduler-events`
+`job_name`, `event_type` (`FIRED`, `STARTED`, `MISSED`, `FAILED`, `CANCELED`), `trigger_type`, `hours`, `limit` (500):
+what the job scheduler did, latest first, with `job_name` or, for a workflow, `workflow_id` and `workflow_name`, and
+`run_id`, `message` and `runner`.
+
+#### The params of a TRANSFER task
+A job may run a transfer param (a file of `[TRANSFER] param_dir` or a row of `rapo_transfer_param`, see
+[docs/transfer.md](../transfer.md)) whether or not the Transfers page is switched on, so its editor has routes of its own
+for them, under *Jobs* and not under *Datasources*; they work while `[TRANSFER] enabled` is off. A param made here is
+kept in the **database**; the Transfers page lists it when it is on, without a schedule of its own (the job is
+scheduled).
+
+* `GET /api/get-job-transfer-params`: `params`, each `{param_name, source ('file', 'db' or 'both'), description,
+  used_by}` (the names of the jobs that run it), and `param_dir` (whether `[TRANSFER] param_dir` is set) and
+  `database_available`.
+* `GET /api/get-job-transfer-catalogue`: the parameters a transfer can have, as `get-transfer-catalogue`.
+* `GET /api/get-job-transfer`: `name`: `{param_name, text, source, description, used_by}`.
+* `POST /api/validate-job-transfer`: body `{text, now}`: checks a param without saving it, as `validate-transfer`.
+* `POST /api/save-job-transfer`: body `{name, text, description, create}`: creates a param in the database, or changes
+  one kept there; `create` refuses an existing name (`409`). A param kept in a file is not written here (`409`): it is
+  changed in its file, or moved to the database on the Transfers page. An invalid param is `400`.
+
+#### Started outside rapo
+* `GET /api/get-external-tasks`: `rescan` (read the system again; the first call reads it when nothing was read yet): what the
+  crontab (Linux) or the Windows Task Scheduler starts, of the user the server runs as; see
+  [docs/jobs.md](../jobs.md#started-outside-rapo). Answers `{platform ('crontab', 'task_scheduler' or null), scanned (when it
+  was read), error (why it could not be read, else null), tasks}`; a task is `{source, name (Task Scheduler only), state,
+  schedule (words, or the cron expression), command, directory, user, next_fire, last_run, last_result (the code of the last
+  run, Task Scheduler only), jobs}`, where `jobs` are the names of the jobs of rapo whose main task it starts. Area *Jobs*,
+  View; there is no route that changes anything.
+* `get-jobs` and `get-job` give each job `external`: `[{source, schedule, name}]` for what starts its main task outside rapo,
+  from the last scan (empty until one was made).
+
+#### Dependencies
+A job or a workflow may wait for other runs (see [docs/jobs.md](../jobs.md#dependencies)). The condition is
+`{"kind": "RUN_STATUS", "targets": [{"type": "control|transfer|job|workflow", "name", "window": {"kind": "today"}}]}`; the
+window `kind` is `today`, `hours` (+ `hours`, 1 to 720), `since_last_run` or `data_date` (a control only, + `days_ago`, 0 to
+31). A workflow takes it as `definition.condition` (also `FILE_EXISTS` and `FILE_COUNT`).
+
+* `GET /api/get-dependency-targets`: `type` (`control`, `transfer`, `job`, `workflow`): `{type, names}`, the names a
+  condition can wait for. Area *Jobs*, View.
+* `check-job` takes `name` as well (a job may not wait for itself) and answers `missing`, the targets that do not exist.
+* `get-jobs` and `get-workflows` give each row `waits_for` and `unmet`; `get-job` and `get-workflow` give `unmet`. `last_run`
+  is the last run that really ran: a run that a condition that was not met canceled does not count, `unmet` says how many
+  such runs came after it and when the last was.
+* `get-job-runs` takes `hide_unmet` (`true` leaves out the runs canceled by a condition that was not met).
+
+#### Workflows
+A workflow is a list of jobs run one after another (see [docs/jobs.md](../jobs.md#workflows)). The routes are in the area
+*Jobs* and answer `404` while `[JOBS] enabled` is off; `503` when the tables of the workflows are missing (run
+`migrations/v0.8.7.5/upgrade.sql`). A workflow is `{workflow_id, workflow_name, description, status ('Y' on, 'N' off),
+schedule_config, notify_email, version, steps (the names of its jobs), created_*, updated_*, definition}`; the `definition`
+is `{version, steps: [{job}], parameters: [{name, value, secret}], timeout, overlap, condition}`, and the value of a secret parameter
+is `********`, as for a job.
+
+* `GET /api/get-workflows`: every workflow without its definition, each with `last_run` (the last *real* run), `unmet`
+  (`{count, last}`: the runs the condition of the workflow stopped since then, or null), `waits_for` (the targets of its
+  condition), `next_fire` and `running`;
+  `manager` (the workflow manager of this server) and `scheduler` (the state of the job scheduler).
+* `GET /api/get-workflow`: `name`: one workflow with its definition and `jobs`, one entry per step
+  (`{job_name, exists, status}`: whether the job exists and is on, which the editor notes).
+* `POST /api/check-workflow`: body `{name, definition}`: checks it without saving: at least one step, every job exists, **a job
+  at most once** (the message names it and its steps: "load is repeated, at steps 2 and 5"), parameters, `timeout`,
+  `overlap`, the `condition`. Answers `{ok, problems, missing, definition}`; `missing` lists the targets of the condition that
+  do not exist (a warning, the workflow can still be saved).
+* `POST /api/save-workflow`: body `{name, definition, description, notify_email, status, schedule, create}`: creates a
+  workflow or changes it (the name is not changed). `notify_email` empty: `[JOBS] default_email`. What is not given
+  stays; `create` refuses an existing name (`409`); a definition that does not check is `422`. A change of the definition
+  or the schedule is a new version.
+* `DELETE /api/delete-workflow`: `name`; `409` while a run of it is running or waiting. Its runs stay until the retention.
+* `POST /api/set-workflow-status`: `name`, `enabled`. `POST /api/save-workflow-schedule`: body `{name, schedule}` as for a job.
+* `POST /api/run-workflow`: `name`, optional body `{parameters: {name: value}}` (values for this run of the parameters of
+  the workflow; an unknown name is `400`). Answers `{run_id}`. A workflow that is running or waiting is refused (`409`)
+  when its `overlap` is `skip`; one without steps is refused (`409`).
+* `POST /api/cancel-workflow-run`: `run_id`: cancels a workflow of this server: the step that runs is canceled and the rest
+  skipped; the run ends `C`. `409` for a run of another server, `404` for one that has ended.
+* `GET /api/get-workflow-runs`: `name` (all when omitted), `limit` (100), `hide_unmet` (leave out the runs its condition
+  stopped): the runs, latest first: `run_id`, `workflow_id`,
+  `workflow_name`, `trigger_type`, `scheduled_time`, `queued_time`, `start_time`, `end_time`, `status` (`I` waiting, `S`
+  running, `D` done, `E` error, `C` canceled), `step_no` (the step it got to), `steps_total`, `message`, `runner`,
+  `requested_by`, `definition_version`, `log_lines`, `mail_status`.
+* `GET /api/get-workflow-run`: `run_id`: a run with `steps` (`{step_no, job_name, job_id, job_run_id, status, start_time,
+  end_time, message}`; `job_run_id` is the run of the job, which has its own log and says `workflow_run_id`) and the log of
+  the workflow (`lines` of `{time, level, text}` and `run_log`). A step is `W` waiting for its turn, `I` queued, `S` running,
+  `D`, `E`, `C`, or `K` skipped.
+* `GET /api/get-workflow-versions`: `name`: the versions, the newest first.
+
+How a run ends: a step that is done goes on to the next; **an error stops the workflow as `E`**, the later steps `K`, and
+one failure mail is sent (to `notify_email`, else `[JOBS] default_email`; the jobs of the steps send none of their own); a
+step **canceled because its condition was not met stops it as `C`** (a warning: the message says where and why, the log has a
+`WARNING` line, no mail), as does a cancel.
+
 ### Service
 
 #### `GET /api/version`
@@ -1577,6 +1846,7 @@ Control runs write to the database, not to the server process, so a watcher comp
 | `runs:changed`      | `{resync, process_ids, control_names}`            |
 | `controls:changed`  | `{resync, control_ids}`                           |
 | `scheduler:changed` | `{event_ids}`                                     |
+| `jobs:changed`      | `{}`: a job, a run or the job scheduler changed (also sent to the one who changed it) |
 | `analysis:progress` | `{session_id, state}` - see Data analysis         |
 | `discrepancy:progress` | A discrepancy analysis job without its `report` - see `start-discrepancy-analysis` |
 | `health:level`     | `{level}`: the worst level of the instance health changed (`null`, `warn`, `crit`) |
@@ -1584,7 +1854,7 @@ Control runs write to the database, not to the server process, so a watcher comp
 | `datasources:changed` | `{kind}`: `config` when `pdi_core_ds_config` or `pdi_core_ds_tables` changed, by anyone; `status` when a count of the waiting files differs from the one before; `state` when a lane lock of `pdi_core_state` changed; `files` when today's file log got files or finished loads; `summary` when days of `rapo_file_summary` were summed (maintenance, `refresh-file-summary`) |
 
 A connection hears only the events of the areas its token may view (`runs:changed`: runs, controls, KPIs or
-Dashboard; `scheduler:changed`: scheduler, runs or Dashboard; `datasources:changed`: datasources, files or Dashboard;
+Dashboard; `scheduler:changed`: scheduler, runs or Dashboard; `jobs:changed`: jobs; `datasources:changed`: datasources, files or Dashboard;
 `discrepancy:progress`: data; `health:level` and `health:join`: instance or Dashboard), and `analysis:progress` only
 of its own token's sessions. Every 30 s the server closes the connections whose token was changed (they may
 reconnect with the new scopes) or is no longer valid (the reconnection is refused).

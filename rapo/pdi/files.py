@@ -10,10 +10,8 @@ is set.
 import concurrent.futures
 import datetime as dt
 import functools
-import grp
 import json
 import os
-import pwd
 import re
 import select
 import stat
@@ -28,6 +26,13 @@ from ..logger import logger
 
 from .store import pdi, DatasourceError, split_directories
 from .scan_worker import PDI_CLEAN_BYTES, YOUNG_SECONDS, walk
+
+try:
+    import grp
+    import pwd
+except ImportError:
+    # Windows has no owners and groups by number: files show them as numbers.
+    grp = pwd = None
 
 WORKER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                            'scan_worker.py')
@@ -80,6 +85,8 @@ def compile_mask(mask):
 
 @functools.lru_cache(maxsize=256)
 def user_name(uid):
+    if pwd is None:
+        return str(uid)
     try:
         return pwd.getpwuid(uid).pw_name
     except KeyError:
@@ -88,10 +95,29 @@ def user_name(uid):
 
 @functools.lru_cache(maxsize=256)
 def group_name(gid):
+    if grp is None:
+        return str(gid)
     try:
         return grp.getgrgid(gid).gr_name
     except KeyError:
         return str(gid)
+
+
+def read_line(stream, timeout):
+    """Read a line of a pipe, None when none comes in `timeout` seconds.
+
+    select works on pipes only on POSIX; elsewhere the read waits in a thread,
+    which ends when the caller kills the child (the pipe closes).
+    """
+    if os.name != 'nt':
+        ready, _, _ = select.select([stream], [], [], timeout)
+        return stream.readline() if ready else None
+    line = []
+    reader = threading.Thread(target=lambda: line.append(stream.readline()),
+                              name='rapo-ds-scanner-read', daemon=True)
+    reader.start()
+    reader.join(timeout)
+    return line[0] if line else None
 
 
 def list_files(row, kind='match', files_mask=None, clean_mask=None,
@@ -468,8 +494,7 @@ class Scanner:
         try:
             process.stdin.write(json.dumps(request) + '\n')
             process.stdin.flush()
-            ready, _, _ = select.select([process.stdout], [], [], timeout)
-            line = process.stdout.readline() if ready else None
+            line = read_line(process.stdout, timeout)
         except (BrokenPipeError, OSError, ValueError) as error:
             self.stop_process(kill=True)
             raise RuntimeError(f'Directory scanner process failed: '

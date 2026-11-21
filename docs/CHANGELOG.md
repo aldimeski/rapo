@@ -6,6 +6,25 @@ The full notes and upgrade steps of each release are in `migrations/<version>/` 
 
 ---
 
+## v0.8.7.5 — 2026-11-21
+
+Everything after v0.8.7 in one release; it replaces v0.8.8, v0.8.9, v0.9.0, v0.10.0, v0.11.0 and v0.12.0, which are withdrawn.
+New tables of the transfers, the jobs and the workflows and a row `RAPO.JOBS` of `rapo_scheduler`, made by one script
+(`migrations/v0.8.7.5/upgrade.sql`); new sections `[TRANSFER]` and `[JOBS]` of `rapo.ini`; new requirement `paramiko`; new
+access area *Jobs*. **Stop every server before the upgrade and start none of v0.8.7 after it** (`migrations/v0.8.7.5/README.md`).
+
+- **File transfers**: the logic of filetransfer-py runs inside rapo (`rapo/transfer/`), params as `.param` files or in the database, scheduled by rapo in a process of their own, log in the database, crontab detection on Linux; **off by default** (`[TRANSFER] enabled`), switched on and off at once from the *Configuration* tab ([docs/transfer.md](transfer.md)).
+- **Jobs** (RAJO): SQL, transfers, programs and scripts with *pre*, *condition*, *main* and *post* parts, parameters with secrets, timeout, overlap and versions, run by **a job scheduler of its own** in `[JOBS] parallelism` slots, with a **failure mail** ([docs/jobs.md](jobs.md), [docs/jobs-design.md](jobs-design.md)).
+- **Workflows**: jobs run one after another; an error stops the workflow as an error with one mail, a condition not met or a cancel stops it as a warning ([docs/jobs.md](jobs.md#workflows)).
+- **Dependencies**: the condition *Run status* waits for controls, transfers, jobs or workflows, each with a window; lists show the last real run and what a job **waits for** ([docs/jobs.md](jobs.md#dependencies)).
+- **Jobs page** with the tabs *Jobs*, *Workflows*, *Transfers* and *External* (what the crontab or the Windows Task Scheduler of the server starts, linked to the jobs it also starts) ([docs/jobs.md](jobs.md#started-outside-rapo)).
+- **The scheduler lease is bound to its row** (`rapo/core/lease.py`), used by both schedulers.
+- **Fixes**: `rapo.ini` saved from the UI keeps its line endings; `rapo-server start dev --scheduler` starts the scheduler; an *Add KPI* button next to the KPI tabs.
+- **New installation**: `schema/oracle.sql` makes the tables of the transfers, the jobs and the workflows.
+- **API**: the routes of the transfers, the jobs, the workflows, the dependencies and `get-external-tasks` ([docs/api](api/README.md#jobs)).
+
+---
+
 ## v0.8.7 — 2026-10-22
 
 New table `rapo_api_token`, column `rapo_scheduler_event.requested_by`, recreated `rapo_config` triggers
@@ -426,3 +445,4 @@ in a `.venv` instead of PyPI; Python >= 3.10.
   - Shared API helper, run actions, schedule parser, sorting and column filters.
 - **REC algorithm options follow `rapo.ini`.** Opening a control no longer freezes the current defaults into its
   `rule_config`.
+

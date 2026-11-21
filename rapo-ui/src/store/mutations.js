@@ -45,6 +45,9 @@ export default {
   updateSchedulerStatus(state, payload) {
     state.schedulerStatus = payload;
   },
+  updateJobSchedulerStatus(state, payload) {
+    state.jobSchedulerStatus = payload;
+  },
   updateInstanceHealth(state, payload) {
     state.instanceHealth = payload;
   },

@@ -74,6 +74,46 @@ const router = createRouter({
       component: SchedulerPage,
     },
     {
+      name: "jobs",
+      path: "/jobs",
+      meta: { title: "Jobs", scope: ["jobs", "view"], hideSearch: true },
+      component: () => import(/* webpackChunkName: "jobs" */ "./components/JobsPage.vue"),
+    },
+    {
+      name: "edit-job",
+      path: "/edit-job/:name?",
+      meta: { title: "Job", scope: ["jobs", "view"], hideSearch: true },
+      component: () => import(/* webpackChunkName: "job-editor" */ "./components/JobEdit.vue"),
+      props: true,
+      beforeEnter: (to, from, next) => {
+        if (!to.params.name) {
+          next({ path: "/jobs" }); // Redirect to the list if the job is undefined
+        } else {
+          next();
+        }
+      },
+    },
+    {
+      name: "edit-workflow",
+      path: "/edit-workflow/:name?",
+      meta: { title: "Workflow", scope: ["jobs", "view"], hideSearch: true },
+      component: () => import(/* webpackChunkName: "workflow-editor" */ "./components/WorkflowEdit.vue"),
+      props: true,
+      beforeEnter: (to, from, next) => {
+        if (!to.params.name) {
+          next({ path: "/jobs", query: { tab: "workflows" } }); // Redirect to the list if the workflow is undefined
+        } else {
+          next();
+        }
+      },
+    },
+    {
+      name: "transfers",
+      path: "/transfers",
+      meta: { title: "Transfers", scope: ["datasources", "view"], hideSearch: true },
+      component: () => import(/* webpackChunkName: "transfers" */ "./components/TransfersPage.vue"),
+    },
+    {
       name: "edit-control",
       path: "/edit-control/:controlId?",
       meta: { title: "Control", scope: ["controls", "view"], hideSearch: true },
@@ -158,7 +198,7 @@ const router = createRouter({
 });
 
 // The pages in the order a token without the Dashboard is sent to the first it may open.
-const LANDING_PAGES = ["dashboard", "results", "controls", "kpi-types", "scheduler", "files", "datasources"];
+const LANDING_PAGES = ["dashboard", "results", "controls", "kpi-types", "scheduler", "jobs", "transfers", "files", "datasources"];
 
 router.beforeEach(function (to, from, next) {
   if (!store.state.tokenIsValid && to.name !== "token") {
@@ -166,11 +206,21 @@ router.beforeEach(function (to, from, next) {
     return;
   }
   const whoami = store.state.whoami;
-  if (to.name === "token" || routeAllowed(whoami, to)) {
+  // The Transfers and Jobs pages are off when the server has [TRANSFER] or [JOBS] enabled switched off.
+  const envInfo = store.state.envInfo;
+  const pageOff = (name) => (name === "transfers" && envInfo && envInfo.transfers_available === false) || (name === "jobs" && envInfo && envInfo.jobs_available === false);
+  const transfersOff = pageOff(to.name);
+  // The transfers are a tab of the Jobs page: the old address opens it, when the token may open Jobs.
+  if (to.name === "transfers" && !transfersOff && !pageOff("jobs") && routeAllowed(whoami, router.resolve({ name: "jobs" }))) {
+    next({ name: "jobs", query: { tab: "transfers" }, replace: true });
+    return;
+  }
+  if (to.name === "token" || (!transfersOff && routeAllowed(whoami, to))) {
     next();
     return;
   }
-  const landing = LANDING_PAGES.map((name) => router.resolve({ name })).find((route) => routeAllowed(whoami, route));
+  const landing = LANDING_PAGES.filter((name) => !pageOff(name))
+    .map((name) => router.resolve({ name })).find((route) => routeAllowed(whoami, route));
   if (landing) {
     next({ name: landing.name, replace: true });
   } else {

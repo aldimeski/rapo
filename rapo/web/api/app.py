@@ -43,6 +43,23 @@ from ...core import views
 from ...core.control import Control, output_table_names
 from ...core.runner import runner
 from ...core.scheduler import scheduler, upcoming, next_fires
+from ...transfer import catalogue as transfer_catalogue
+from ...transfer import engine as transfer_engine
+from ...transfer import manager as transfer_manager
+from ...transfer import store as transfer_store
+from ...transfer.manager import manager as transfers
+from ...jobs import catalogue as job_catalogue
+from ...jobs import definition as job_definition
+from ...jobs import dependencies as job_dependencies
+from ...jobs import external as job_external
+from ...jobs import store as job_store
+from ...jobs.manager import manager as job_manager
+from ...jobs.workflow_manager import manager as workflow_manager
+from ...jobs import workflow as job_workflow
+from ...jobs import workflow_store
+from ...jobs.scheduler import upcoming_workflows
+from ...jobs.scheduler import scheduler as job_scheduler
+from ...jobs.scheduler import upcoming as job_upcoming
 from ...analysis import datasets
 from ...analysis import explain
 from ...analysis.explain_job import explainer
@@ -87,7 +104,11 @@ async def lifespan(app):
         logger.warning('Options of rapo.ini.example missing from '
                        f'rapo/options.py: {", ".join(missing)}')
     runner.listeners.append(events.poke_scheduler)
+    transfers.listeners.append(events.poke)
     scheduler.listeners.append(events.poke_scheduler)
+    job_manager.listeners.append(events.poke_jobs)
+    workflow_manager.listeners.append(events.poke_jobs)
+    job_scheduler.listeners.append(events.poke_jobs)
     sessions.listeners.append(events.emit_analysis)
     explainer.listeners.append(events.emit_discrepancy)
     # The waiting files are counted only while someone looks at them.
@@ -101,7 +122,11 @@ async def lifespan(app):
     dashboard.file_data.listeners.append(events.emit_datasources)
     logs.cleaner.start()
     await asyncio.to_thread(runner.start)
+    await asyncio.to_thread(transfers.start)
+    await asyncio.to_thread(job_manager.start)
+    await asyncio.to_thread(workflow_manager.start)
     scheduler.start()
+    job_scheduler.start()
     sessions.start()
     explainer.start()
     spare.start()
@@ -113,7 +138,11 @@ async def lifespan(app):
     await asyncio.to_thread(explainer.stop)
     await asyncio.to_thread(scanner.stop)
     await asyncio.to_thread(sessions.stop)
+    await asyncio.to_thread(job_scheduler.stop)
     await asyncio.to_thread(scheduler.stop)
+    await asyncio.to_thread(workflow_manager.stop)
+    await asyncio.to_thread(job_manager.stop)
+    await asyncio.to_thread(transfers.stop)
     await asyncio.to_thread(runner.stop)
     logs.cleaner.stop()
 
@@ -226,6 +255,8 @@ def info():
         'log_directory': LOG_DIR,
         'tokens_available': token_store.available is not False,
         'kpi_available': kpi.available,
+        'transfers_available': transfers.enabled(),
+        'jobs_available': job_manager.enabled(),
         'view_edit': views.enabled(),
         'view_preview_max_rows': options.get('VIEWS', 'preview_max_rows'),
         **datasource_capabilities()
@@ -464,6 +495,12 @@ def apply_config():
     # A higher control_parallelism lets queued runs start at once.
     with runner.condition:
         runner.condition.notify_all()
+    # [TRANSFER] enabled starts or stops the transfer manager at once, and
+    # [JOBS] enabled the job manager and the job scheduler.
+    transfers.sync()
+    job_manager.sync()
+    workflow_manager.sync()
+    job_scheduler.sync()
     pending = [item for item in config.changes() if item['restart']]
     names = ', '.join(f"{item['section']}.{item['option']}"
                       for item in applied) or 'nothing'
@@ -2485,6 +2522,909 @@ def remove_file(path):
     """Remove a temporary file once it is sent."""
     if os.path.exists(path):
         os.remove(path)
+
+
+def require_transfers():
+    """Refuse a transfer route while [TRANSFER] enabled is off."""
+    if not transfers.enabled():
+        raise fastapi.HTTPException(
+            status_code=404,
+            detail='File transfers are switched off: set enabled=True in '
+                   'the [TRANSFER] section of rapo.ini.')
+
+
+def transfer_answer(call, *args, **kwargs):
+    """Run a file transfer call, answering its StoreError as HTTP error."""
+    try:
+        return call(*args, **kwargs)
+    except transfer_store.StoreError as error:
+        raise fastapi.HTTPException(status_code=error.status,
+                                    detail=str(error))
+    except transfer_engine.ConfigError as error:
+        raise fastapi.HTTPException(status_code=422, detail=str(error))
+
+
+@api.get('/get-transfers',
+         dependencies=[fastapi.Depends(require_transfers)])
+def get_transfers(rescan: bool = False):
+    """Get every file transfer param: where it is kept (file or database),
+    how it is scheduled (in rapo or in the crontab, with the next start and
+    the scheduler's state) and its last run. `rescan` reads the crontab
+    again instead of reusing the last scan."""
+    answer = transfer_answer(transfers.table, rescan)
+    answer['scheduler'] = {'state': scheduler.status()['state'],
+                           'leader': scheduler.leader}
+    answer['manager'] = transfers.status()
+    return answer
+
+
+def transfer_catalogue_answer():
+    """The parameters a transfer can have, for the param editor."""
+    return {'groups': transfer_catalogue.GROUPS,
+            'parameters': transfer_catalogue.parameters()}
+
+
+def transfer_param_answer(name):
+    """A param: its name, text, where it is kept and its description."""
+    name = transfer_answer(transfer_store.check_name, name)
+    text, source = transfer_answer(transfer_store.read, name)
+    return {'param_name': name, 'text': text, 'source': source,
+            'description': transfer_store.description(name)
+            if source == transfer_store.DATABASE else None}
+
+
+def transfer_validation_answer(data):
+    """Check the text of a param and show what its date tokens expand to."""
+    moment = dt.datetime.now()
+    if data.get('now'):
+        try:
+            moment = dt.datetime.strptime(data['now'], '%Y-%m-%d %H:%M:%S')
+        except ValueError as error:
+            raise fastapi.HTTPException(status_code=422, detail=str(error))
+    cfg = transfer_answer(transfer_engine.validate, data.get('text') or '',
+                          moment)
+    return {'reference_time': moment, 'file_mask': cfg.file_mask_raw,
+            'file_mask_expanded': cfg.file_mask_expanded,
+            'file_creation_date': cfg.date_spec_raw or None,
+            'file_creation_date_expanded': cfg.date_spec_expanded or None,
+            'input_dir': cfg.input_dir, 'output_dirs': cfg.output_dirs,
+            'sftp': cfg.sftp}
+
+
+@api.get('/get-transfer-catalogue',
+         dependencies=[fastapi.Depends(require_transfers)])
+def get_transfer_catalogue():
+    """Get the parameters a transfer can have, in the order they are written:
+    name, group, kind of value, default, whether it is required and its
+    description, which the param editor is built from."""
+    return transfer_catalogue_answer()
+
+
+@api.get('/get-transfer',
+         dependencies=[fastapi.Depends(require_transfers)])
+def get_transfer(name: str):
+    """Get the text of a param, where it is kept, its description and its
+    schedule in rapo."""
+    answer = transfer_param_answer(name)
+    planned = transfers.read_schedules().get(answer['param_name'])
+    answer['schedule'] = {'config': planned['config'],
+                          'enabled': planned['enabled']} if planned else None
+    return answer
+
+
+@api.post('/validate-transfer',
+         dependencies=[fastapi.Depends(require_transfers)])
+def validate_transfer(data: dict = fastapi.Body(...)):
+    """Check the text of a param and show what its date tokens expand to
+    now (`now`, "YYYY-MM-DD HH:MM:SS", tries another moment)."""
+    return transfer_validation_answer(data)
+
+
+@api.post('/save-transfer',
+         dependencies=[fastapi.Depends(require_transfers)])
+def save_transfer(data: dict = fastapi.Body(...)):
+    """Save a param to a file in [TRANSFER] param_dir or to the database.
+
+    The body is {name, text, where (file or db), description, create}; a
+    new param is created with `create`, which refuses an existing name.
+    """
+    name = transfer_answer(
+        transfer_store.write, data.get('name'), data.get('text'),
+        data.get('where'), note=data.get('description'),
+        create=bool(data.get('create')))
+    transfers.invalidate()
+    return {'status': 200, 'param_name': name}
+
+
+@api.get('/check-move-transfer',
+         dependencies=[fastapi.Depends(require_transfers)])
+def check_move_transfer(name: str, target: str):
+    """Get what moving a param to `file` or `db` changes: `warnings` need a
+    confirmation (`confirm` of move-transfer), `notes` only tell. Moved to a
+    file, a param loses LogDatabase, and one without LogDir and LogFile has no
+    logging afterwards."""
+    plan = transfer_answer(transfer_store.plan_move, name, target)
+    return {'warnings': plan['warnings'], 'notes': plan['notes']}
+
+
+@api.post('/move-transfer',
+         dependencies=[fastapi.Depends(require_transfers)])
+def move_transfer(name: str, target: str, confirm: bool = False):
+    """Move a param to a file (`file`) or to the database (`db`); its
+    schedule stays. `409` while the move has warnings and `confirm` is not
+    set (see check-move-transfer)."""
+    transfer_answer(transfer_store.move, name, target, confirm)
+    transfers.invalidate()
+    return {'status': 200}
+
+
+@api.delete('/delete-transfer',
+         dependencies=[fastapi.Depends(require_transfers)])
+def delete_transfer(name: str):
+    """Delete a param, wherever it is kept, with its schedule."""
+    name = transfer_answer(transfer_store.check_name, name)
+    if transfers.busy(name):
+        raise fastapi.HTTPException(
+            status_code=409, detail=f'Transfer {name} is running or waiting.')
+    transfer_answer(transfer_store.delete, name)
+    transfers.invalidate()
+    return {'status': 200}
+
+
+@api.post('/save-transfer-schedule',
+         dependencies=[fastapi.Depends(require_transfers)])
+def save_transfer_schedule(data: dict = fastapi.Body(...)):
+    """Set the schedule of a param in rapo, the units of a control schedule
+    ({mday, wday, hour, min, sec}); no units: not scheduled in rapo. The
+    transfer is then performed by rapo, so it must not also be started from
+    the crontab."""
+    units = data.get('schedule')
+    config_json = None
+    if units:
+        try:
+            config_json = transfer_manager.schedule_json(units)
+            schedule.parse(config_json)
+        except (ValueError, TypeError, AttributeError) as error:
+            raise fastapi.HTTPException(status_code=422, detail=str(error))
+    transfer_answer(transfer_store.write_schedule, data.get('name'),
+                    config_json, bool(data.get('enabled', True)))
+    transfers.invalidate()
+    scheduler.refresh()
+    return {'status': 200}
+
+
+@api.post('/run-transfer',
+         dependencies=[fastapi.Depends(require_transfers)])
+def run_transfer(name: str):
+    """Initiate a run of a param and queue it for execution."""
+    run_id = transfer_answer(transfers.submit, name, transfer_manager.MANUAL,
+                             requested_by=auth.current().requester)
+    events.poke()
+    return {'status': 200, 'run_id': run_id}
+
+
+@api.post('/cancel-transfer',
+         dependencies=[fastapi.Depends(require_transfers)])
+def cancel_transfer(run_id: int):
+    """Cancel a waiting or running transfer of this server."""
+    if not transfers.cancel(run_id):
+        raise fastapi.HTTPException(
+            status_code=404,
+            detail='Not a run of this server, or it has finished.')
+    events.poke()
+    return {'status': 200}
+
+
+@api.get('/get-transfer-runs',
+         dependencies=[fastapi.Depends(require_transfers)])
+def get_transfer_runs(name: str | None = None,
+                      limit: int = fastapi.Query(100, ge=1, le=1000)):
+    """Get the runs of file transfers, latest first, without their log."""
+    return transfer_answer(transfer_store.read_runs, name, limit)
+
+
+@api.get('/get-transfer-run',
+         dependencies=[fastapi.Depends(require_transfers)])
+def get_transfer_run(run_id: int):
+    """Get one transfer run with its log (`run_log`). For a param with
+    LogDatabase:Y the log is read from rapo_transfer_log, and `log_trimmed`
+    tells that its oldest lines were deleted to keep the newest of the param."""
+    row = transfer_answer(transfer_store.read_run, run_id)
+    if not row:
+        raise fastapi.HTTPException(status_code=404,
+                                    detail=f'Transfer run {run_id} not found')
+    return row
+
+
+# Jobs
+
+def require_jobs():
+    """Refuse a job route while [JOBS] enabled is off."""
+    if not job_manager.enabled():
+        raise fastapi.HTTPException(
+            status_code=404,
+            detail='Jobs are switched off: set enabled=True in the [JOBS] '
+                   'section of rapo.ini.')
+
+
+JOBS = [fastapi.Depends(require_jobs)]
+
+
+def job_answer(call, *args, **kwargs):
+    """Run a job call, answering its StoreError and DefinitionError as HTTP
+    errors."""
+    try:
+        return call(*args, **kwargs)
+    except job_store.StoreError as error:
+        raise fastapi.HTTPException(status_code=error.status,
+                                    detail=str(error))
+    except job_definition.DefinitionError as error:
+        raise fastapi.HTTPException(status_code=422, detail=str(error))
+
+
+def present_job(row, last_run=None, next_fire=None, running=None):
+    """Get a job for the browser: its definition as an object with the
+    values of secret parameters hidden."""
+    job = {key: value for key, value in row.items() if key != 'definition'}
+    if 'definition' in row:
+        job['definition'] = job_definition.mask_secrets(
+            json.loads(row['definition']))
+    job['last_run'] = last_run
+    job['next_fire'] = next_fire
+    job['running'] = running
+    return job
+
+
+def jobs_outside():
+    """Get {job name: [what starts it outside rapo]} from the last scan of
+    the crontab or the Task Scheduler. A scan is started in the background
+    when there is none yet, so the lists know it soon after the start."""
+    job_external.scan_in_background()
+    entries = job_external.kept()['entries']
+    if not entries:
+        return {}
+    return job_external.of_jobs(entries, job_answer(job_store.read_definitions))
+
+
+@api.get('/get-external-tasks', dependencies=JOBS)
+def get_external_tasks(rescan: bool = False):
+    """Get what is started outside rapo, by the crontab (Linux) or the
+    Windows Task Scheduler, of the user the server runs as: every entry with
+    its schedule, command, next start and, when it starts what the main task
+    of a job runs, the `jobs`. Only read. The scan is kept; `rescan` reads
+    it again. `error` tells why the system could not be read."""
+    scan = job_external.scan() if rescan or \
+        job_external.kept()['entries'] is None else job_external.kept()
+    tasks = job_external.link(scan['entries'],
+                              job_answer(job_store.read_definitions))
+    return {'platform': job_external.platform(), 'scanned': scan['time'],
+            'error': scan['error'], 'tasks': tasks}
+
+
+def jobs_in_workflows():
+    """Get {job name: [names of the workflows that have it as a step]};
+    empty while the workflow tables are missing."""
+    found = {}
+    try:
+        for row in workflow_store.read_workflows():
+            for name in row['steps']:
+                found.setdefault(name, []).append(row['workflow_name'])
+    except job_store.StoreError:
+        pass
+    return found
+
+
+def next_job_fires():
+    """Get {job_id: the next fire} of the jobs that are on."""
+    now = dt.datetime.now().replace(microsecond=0)
+    fires = {}
+    for job_id, item in job_store.read_scheduled().items():
+        fire = schedule.next_fire(item['schedule'], now)
+        fires[job_id] = fire[0] if fire else None
+    return fires
+
+
+@api.get('/get-jobs', dependencies=JOBS)
+def get_jobs():
+    """Get every job (without its definition) with its last run, its next
+    fire and whether it is running or waiting, and the job manager."""
+    rows = job_answer(job_store.read_jobs)
+    last = job_answer(job_store.read_last_runs)
+    unmet = job_answer(job_store.read_unmet)
+    waits = job_answer(job_store.read_waits_for)
+    outside = jobs_outside()
+    fires = next_job_fires()
+    in_workflows = jobs_in_workflows()
+    jobs = []
+    for row in rows:
+        run = last.get(row['job_id'])
+        running = job_manager.busy(row['job_id']) or bool(
+            run and run['status'] in job_store.ACTIVE)
+        item = present_job(row, run, fires.get(row['job_id']), running)
+        item['workflows'] = in_workflows.get(row['job_name'], [])
+        item['unmet'] = unmet.get(row['job_id'])
+        item['waits_for'] = waits.get(row['job_id'], [])
+        item['external'] = outside.get(row['job_name'], [])
+        jobs.append(item)
+    return {'jobs': jobs, 'manager': job_manager.status(),
+            'scheduler': job_scheduler.status()['state']}
+
+
+@api.get('/get-job', dependencies=JOBS)
+def get_job(name: str):
+    """Get a job with its definition; the values of secret parameters are
+    hidden (`********`) and kept when the job is saved with them so."""
+    row = job_answer(job_store.get_job, name)
+    last = job_answer(job_store.read_last_runs).get(row['job_id'])
+    fires = next_job_fires()
+    running = job_manager.busy(row['job_id']) or bool(
+        last and last['status'] in job_store.ACTIVE)
+    answer = present_job(row, last, fires.get(row['job_id']), running)
+    answer['workflows'] = jobs_in_workflows().get(row['job_name'], [])
+    answer['unmet'] = job_answer(job_store.read_unmet).get(row['job_id'])
+    answer['external'] = jobs_outside().get(row['job_name'], [])
+    return answer
+
+
+@api.get('/get-job-catalogue', dependencies=JOBS)
+def get_job_catalogue():
+    """Get what a job can be on this server: the types of its OS with
+    whether each is available and why not, the kinds of condition, the
+    overlaps, the allowed folders and the defaults."""
+    answer = job_catalogue.describe()
+    mail = mailer.settings()
+    answer.update(
+        max_output_kb=options.get('JOBS', 'max_output_kb'),
+        email_enabled=bool(mail.get('enabled')),
+        default_email=bool(options.get('JOBS', 'default_email')),
+        variables=list(job_definition.VARIABLES))
+    return answer
+
+
+@api.post('/check-job', dependencies=JOBS)
+def check_job(data: dict = fastapi.Body(...)):
+    """Check a definition without saving or running it: the types of this
+    server, interpreters, files, allowed folders, SQL, conditions,
+    parameters. Answers `problems` (empty when it is fit) and the
+    definition with its defaults filled in."""
+    try:
+        definition = job_definition.normalize(data.get('definition'))
+    except job_definition.DefinitionError as error:
+        return {'ok': False, 'problems': error.problems, 'definition': None}
+    name = str(data.get('name') or '').strip()
+    ctx = dict(job_catalogue.context(), owner=('job', name)) if name else None
+    problems = job_definition.validate(definition, ctx, check_paths=True)
+    return {'ok': not problems, 'problems': problems,
+            'missing': job_dependencies.missing(definition.get('condition')),
+            'job_type': job_definition.job_type(definition),
+            'definition': job_definition.mask_secrets(definition)}
+
+
+@api.get('/get-dependency-targets', dependencies=JOBS)
+def get_dependency_targets(type: str):
+    """Get the names a condition *Run status* can wait for: the controls,
+    transfers, jobs or workflows (`type`: control, transfer, job or
+    workflow)."""
+    if type not in job_catalogue.TARGET_TYPES:
+        raise fastapi.HTTPException(
+            status_code=422, detail='type is one of '
+            + ', '.join(job_catalogue.TARGET_TYPES))
+    try:
+        return {'type': type, 'names': job_dependencies.names(type)}
+    except job_dependencies.DependencyError as error:
+        raise fastapi.HTTPException(status_code=503, detail=str(error))
+
+
+@api.post('/save-job', dependencies=JOBS)
+def save_job(data: dict = fastapi.Body(...)):
+    """Create or change a job: `name`, `definition` and, when given,
+    `description`, `notify_email`, `status` ('Y' on, 'N' off) and `schedule`
+    (the units of `save-job-schedule`, null for none); what is not given
+    stays. `create` refuses an existing name. A change of the
+    definition makes a new version. Saving SQL needs Free SQL."""
+    name = job_answer(job_store.check_name, data.get('name'))
+    stored = job_answer(job_store.read_job, name)
+    try:
+        definition = job_definition.normalize(data.get('definition'))
+        definition = job_definition.restore_secrets(
+            definition, json.loads(stored['definition']) if stored
+            else None)
+    except job_definition.DefinitionError as error:
+        raise fastapi.HTTPException(status_code=422, detail=str(error))
+    if job_definition.uses_sql(definition):
+        auth.require_free_sql(auth.current())
+    values = {key: data[key] for key in ('description', 'notify_email',
+                                         'status') if key in data}
+    if 'schedule' in data:
+        try:
+            values['schedule_config'] = job_store.schedule_json(
+                data['schedule'])
+        except (ValueError, TypeError, AttributeError) as error:
+            raise fastapi.HTTPException(status_code=422, detail=str(error))
+    saved = job_answer(job_store.save_job, name, definition,
+                       create=bool(data.get('create')), **values)
+    job_scheduler.refresh()
+    events.poke_jobs()
+    return present_job(saved)
+
+
+@api.delete('/delete-job', dependencies=JOBS)
+def delete_job(name: str, confirm: bool = False):
+    """Delete a job with its versions; its runs stay until their retention
+    ends. A job running or waiting is refused. A job that is a step of
+    workflows is refused (`409`, the message names them: `get-jobs` and
+    `get-job` list them as `workflows`) until `confirm` is true; then it is
+    taken out of their steps (a new version of each) and a workflow left
+    without steps is switched off. The answer lists them as `workflows`."""
+    used = jobs_in_workflows().get(name, [])
+    if used and not confirm:
+        raise fastapi.HTTPException(
+            status_code=409,
+            detail=f'Job {name} is a step of the workflow'
+                   f'{"" if len(used) == 1 else "s"} {", ".join(used)}: '
+                   'confirm to take it out of '
+                   f'{"it" if len(used) == 1 else "them"}.')
+    job_answer(job_store.delete_job, name)
+    changed = []
+    if used:
+        changed = job_answer(workflow_store.remove_job, name)
+    job_scheduler.refresh()
+    events.poke_jobs()
+    return {'status': 200, 'workflows': changed}
+
+
+@api.post('/set-job-status', dependencies=JOBS)
+def set_job_status(name: str, enabled: bool):
+    """Switch a job on or off: off is not scheduled, a manual run is still
+    possible."""
+    job_answer(job_store.set_status, name, enabled)
+    job_scheduler.refresh()
+    events.poke_jobs()
+    return {'status': 200}
+
+
+@api.post('/save-job-schedule', dependencies=JOBS)
+def save_job_schedule(data: dict = fastapi.Body(...)):
+    """Set the schedule of a job, the units of a control schedule
+    ({mday, wday, hour, min, sec}); no units: not scheduled. A new
+    version."""
+    try:
+        config_json = job_store.schedule_json(data.get('schedule'))
+    except (ValueError, TypeError, AttributeError) as error:
+        raise fastapi.HTTPException(status_code=422, detail=str(error))
+    saved = job_answer(job_store.write_schedule, data.get('name'),
+                       config_json)
+    job_scheduler.refresh()
+    events.poke_jobs()
+    return present_job(saved)
+
+
+@api.post('/run-job', dependencies=JOBS)
+def run_job(name: str, data: dict | None = fastapi.Body(None)):
+    """Initiate a run of a job and queue it. `parameters` of the body give
+    values of the job's parameters for this run. A job that is running or
+    waiting is refused when it may not overlap with itself."""
+    run_id = job_answer(job_manager.submit, name, job_store.MANUAL,
+                        requested_by=auth.current().requester,
+                        parameters=(data or {}).get('parameters'))
+    events.poke_jobs()
+    return {'status': 200, 'run_id': run_id}
+
+
+@api.post('/cancel-job-run', dependencies=JOBS)
+def cancel_job_run(run_id: int):
+    """Cancel a waiting or running job of this server."""
+    if not job_manager.cancel(run_id):
+        row = job_answer(job_store.read_run, run_id)
+        if row and row['status'] in job_store.ACTIVE:
+            raise fastapi.HTTPException(
+                status_code=409,
+                detail=f'The run belongs to {row["runner"]}, cancel it '
+                       'there.')
+        raise fastapi.HTTPException(
+            status_code=404,
+            detail='Not a run of this server, or it has finished.')
+    events.poke_jobs()
+    return {'status': 200}
+
+
+@api.get('/get-job-runs', dependencies=JOBS)
+def get_job_runs(name: str | None = None,
+                 limit: int = fastapi.Query(100, ge=1, le=1000),
+                 hide_unmet: bool = False):
+    """Get the runs of a job, or of every job, latest first, without their
+    log. `hide_unmet` leaves out the runs that a condition that was not met
+    canceled."""
+    job_id = job_answer(job_store.get_job, name)['job_id'] if name else None
+    return job_answer(job_store.read_runs, job_id, limit, hide_unmet)
+
+
+@api.get('/get-job-run', dependencies=JOBS)
+def get_job_run(run_id: int):
+    """Get one run of a job with its log (`run_log`, the lines of the
+    program and of rapo); `log_trimmed` tells that its oldest lines were
+    deleted to keep the newest of the job."""
+    row = job_answer(job_store.read_run, run_id)
+    if not row:
+        raise fastapi.HTTPException(status_code=404,
+                                    detail=f'Job run {run_id} not found')
+    return row
+
+
+@api.get('/get-job-versions', dependencies=JOBS)
+def get_job_versions(name: str):
+    """Get the versions of a job, the newest first, with their
+    definitions (secret values hidden)."""
+    job = job_answer(job_store.get_job, name)
+    versions = job_answer(job_store.read_versions, job['job_id'])
+    for item in versions:
+        item['definition'] = job_definition.mask_secrets(
+            json.loads(item['definition']))
+    return versions
+
+
+# The params a TRANSFER task runs. A job may use a transfer whether or not the
+# Transfers page is switched on ([TRANSFER] enabled), so a job's editor has
+# routes of its own for them, under the area of the jobs. A param made here is
+# kept in the database, where the Transfers page shows it when it is on.
+
+@api.get('/get-job-transfer-params', dependencies=JOBS)
+def get_job_transfer_params():
+    """Get the params a TRANSFER task may run, those kept as files and those
+    in the database, each with its description and the jobs that run it."""
+    files = transfer_store.read_files()
+    database = transfer_store.read_database()
+    used = job_answer(job_store.read_transfer_usage)
+    params = []
+    for name in sorted(set(files) | set(database or {})):
+        in_file, in_database = name in files, name in (database or {})
+        params.append({
+            'param_name': name,
+            'source': 'both' if in_file and in_database
+            else 'file' if in_file else 'db',
+            'description': (database or {}).get(name, {}).get('description'),
+            'used_by': used.get(name, [])})
+    return {'params': params, 'param_dir': bool(transfer_store.param_dir()),
+            'database_available': database is not None}
+
+
+@api.get('/get-job-transfer-catalogue', dependencies=JOBS)
+def get_job_transfer_catalogue():
+    """Get the parameters a transfer can have, for the param editor."""
+    return transfer_catalogue_answer()
+
+
+@api.get('/get-job-transfer', dependencies=JOBS)
+def get_job_transfer(name: str):
+    """Get a param with its text, where it is kept and the jobs that run it.
+    One kept in a file is only read here."""
+    answer = transfer_param_answer(name)
+    answer['used_by'] = job_answer(job_store.read_transfer_usage).get(
+        answer['param_name'], [])
+    return answer
+
+
+@api.post('/validate-job-transfer', dependencies=JOBS)
+def validate_job_transfer(data: dict = fastapi.Body(...)):
+    """Check the text of a param and show what its date tokens expand to."""
+    return transfer_validation_answer(data)
+
+
+@api.post('/save-job-transfer', dependencies=JOBS)
+def save_job_transfer(data: dict = fastapi.Body(...)):
+    """Create a param in the database, or change one kept there: `name`,
+    `text`, `description`, and `create` to refuse an existing name. A param
+    kept in a file is not written here (409): it is changed where it is."""
+    name = transfer_answer(transfer_store.check_name, data.get('name'))
+    if transfer_store.FILE in transfer_store.exists(name):
+        raise fastapi.HTTPException(
+            status_code=409,
+            detail=f'Param {name} is kept in a file: change the file, or '
+                   'move the param to the database on the Transfers page.')
+    transfer_answer(transfer_store.write, name, data.get('text'),
+                    transfer_store.DATABASE, note=data.get('description'),
+                    create=bool(data.get('create')))
+    transfers.invalidate()
+    return {'status': 200, 'param_name': name}
+
+
+@api.get('/job-scheduler-status', dependencies=JOBS)
+def job_scheduler_status():
+    """Get the status of the job scheduler and the job manager."""
+    return job_scheduler.status()
+
+
+@api.post('/job-scheduler-stop', dependencies=JOBS)
+def job_scheduler_stop():
+    """Stop scheduling the jobs on all servers until started again."""
+    job_scheduler.disable()
+    events.poke_jobs()
+    return {'status': 200}
+
+
+@api.post('/job-scheduler-start', dependencies=JOBS)
+def job_scheduler_start():
+    """Start scheduling the jobs from now on."""
+    if not job_scheduler.enabled:
+        raise fastapi.HTTPException(
+            status_code=409,
+            detail='The job scheduler is disabled for this server in '
+                   'rapo.ini')
+    job_scheduler.enable()
+    events.poke_jobs()
+    return {'status': 200}
+
+
+@api.get('/job-scheduler-upcoming', dependencies=JOBS)
+def job_scheduler_upcoming(hours: int = fastapi.Query(24, ge=1, le=24*31),
+                           job_name: str | None = None,
+                           workflow_name: str | None = None):
+    """Get the fires of the jobs and the workflows that are on in the next
+    `hours`, in order: `{scheduled_time, kind ('job' or 'workflow'),
+    job_name, workflow_name}`. A name narrows to that job or workflow."""
+    fires = []
+    if not workflow_name:
+        fires += [{'scheduled_time': moment, 'kind': 'job',
+                   'job_name': name, 'workflow_name': None}
+                  for moment, name in job_upcoming(hours, job_name)]
+    if not job_name:
+        fires += [{'scheduled_time': moment, 'kind': 'workflow',
+                   'job_name': None, 'workflow_name': name}
+                  for moment, name in upcoming_workflows(hours,
+                                                         workflow_name)]
+    return sorted(fires, key=lambda item: item['scheduled_time'])
+
+
+@api.get('/job-scheduler-events', dependencies=JOBS)
+def job_scheduler_events(job_name: str | None = None,
+                         event_type: str | None = None,
+                         trigger_type: str | None = None,
+                         hours: int | None = fastapi.Query(None, ge=1,
+                                                           le=24*31),
+                         limit: int = fastapi.Query(500, ge=1, le=5000)):
+    """Get the events of the job scheduler, latest first."""
+    job_id = job_answer(job_store.get_job, job_name)['job_id'] \
+        if job_name else None
+    since = window_start(hours) if hours else None
+    events_read = job_answer(job_store.read_events, limit, job_id,
+                             event_type, trigger_type, since)
+    names = {}
+    if any(item.get('workflow_id') for item in events_read):
+        try:
+            names = {item['workflow_id']: item['workflow_name']
+                     for item in workflow_store.read_workflows()}
+        except job_store.StoreError:
+            pass
+    for item in events_read:
+        item['workflow_name'] = names.get(item.get('workflow_id'))
+    return events_read
+
+
+# Workflows: jobs run one after another, see docs/jobs-design.md section 11.
+
+def present_workflow(row, last_run=None, next_fire=None, running=None):
+    """Get a workflow for the browser: its definition as an object with the
+    values of secret parameters hidden, and the names of its jobs."""
+    workflow_row = {key: value for key, value in row.items()
+                    if key != 'definition'}
+    if 'definition' in row:
+        definition = json.loads(row['definition'])
+        workflow_row['definition'] = job_definition.mask_secrets(definition)
+        workflow_row['steps'] = job_workflow.job_names(definition)
+    workflow_row['last_run'] = last_run
+    workflow_row['next_fire'] = next_fire
+    workflow_row['running'] = running
+    return workflow_row
+
+
+def next_workflow_fires():
+    """Get {workflow_id: the next fire} of the workflows that are on."""
+    now = dt.datetime.now().replace(microsecond=0)
+    fires = {}
+    for workflow_id, item in workflow_store.read_scheduled().items():
+        fire = schedule.next_fire(item['schedule'], now)
+        fires[workflow_id] = fire[0] if fire else None
+    return fires
+
+
+def workflow_running(row, last_run):
+    return workflow_manager.busy(row['workflow_id']) or bool(
+        last_run and last_run['status'] in job_store.ACTIVE)
+
+
+@api.get('/get-workflows', dependencies=JOBS)
+def get_workflows():
+    """Get every workflow (without its definition) with the names of its
+    jobs (`steps`), its last run, its next fire and whether it is running or
+    waiting, and the workflow manager."""
+    rows = job_answer(workflow_store.read_workflows)
+    last = job_answer(workflow_store.read_last_runs)
+    unmet = job_answer(workflow_store.read_unmet)
+    fires = next_workflow_fires()
+    items = [
+        present_workflow(row, last.get(row['workflow_id']),
+                         fires.get(row['workflow_id']),
+                         workflow_running(row, last.get(row['workflow_id'])))
+        for row in rows]
+    for item in items:
+        item['unmet'] = unmet.get(item['workflow_id'])
+    return {'workflows': items,
+        'manager': workflow_manager.status(),
+        'scheduler': job_scheduler.status()['state']}
+
+
+@api.get('/get-workflow', dependencies=JOBS)
+def get_workflow(name: str):
+    """Get a workflow with its definition; the values of secret parameters
+    are hidden (`********`) and kept when it is saved with them so. `jobs`
+    tells for each step whether its job exists and is on."""
+    row = job_answer(workflow_store.get_workflow, name)
+    last = job_answer(workflow_store.read_last_runs).get(row['workflow_id'])
+    answer = present_workflow(
+        row, last, next_workflow_fires().get(row['workflow_id']),
+        workflow_running(row, last))
+    answer['unmet'] = job_answer(workflow_store.read_unmet).get(
+        row['workflow_id'])
+    known = {item['job_name']: item['status']
+             for item in job_answer(job_store.read_jobs)}
+    answer['jobs'] = [{'job_name': item, 'exists': item in known,
+                       'status': known.get(item)}
+                      for item in answer['steps']]
+    return answer
+
+
+@api.post('/check-workflow', dependencies=JOBS)
+def check_workflow(data: dict = fastapi.Body(...)):
+    """Check a workflow definition without saving it: at least one step, a
+    job at most once (the answer names the job and its steps), the jobs must
+    exist, parameters, timeout and overlap. Answers `problems` (empty when it
+    can be saved) and the definition with its defaults filled in."""
+    try:
+        definition = job_workflow.normalize(data.get('definition'))
+    except job_definition.DefinitionError as error:
+        return {'ok': False, 'problems': error.problems, 'definition': None}
+    name = str(data.get('name') or '').strip() or None
+    problems = job_workflow.validate(
+        definition, job_answer(workflow_store.known_jobs), name)
+    return {'ok': not problems, 'problems': problems,
+            'missing': job_dependencies.missing(definition.get('condition')),
+            'definition': job_definition.mask_secrets(definition)}
+
+
+@api.post('/save-workflow', dependencies=JOBS)
+def save_workflow(data: dict = fastapi.Body(...)):
+    """Create or change a workflow: `name`, `definition` and, when given,
+    `description`, `notify_email` (empty: `[JOBS] default_email`), `status`
+    ('Y' on, 'N' off) and `schedule` (the units of `save-workflow-schedule`,
+    null for none); what is not given stays. `create` refuses an existing
+    name. A change of the definition or the schedule makes a new version."""
+    name = job_answer(job_store.check_name, data.get('name'))
+    stored = job_answer(workflow_store.read_workflow, name)
+    try:
+        definition = job_workflow.normalize(data.get('definition'))
+        definition = job_definition.restore_secrets(
+            definition, json.loads(stored['definition']) if stored
+            else None)
+    except job_definition.DefinitionError as error:
+        raise fastapi.HTTPException(status_code=422, detail=str(error))
+    values = {key: data[key] for key in ('description', 'notify_email',
+                                         'status') if key in data}
+    if 'schedule' in data:
+        try:
+            values['schedule_config'] = job_store.schedule_json(
+                data['schedule'])
+        except (ValueError, TypeError, AttributeError) as error:
+            raise fastapi.HTTPException(status_code=422, detail=str(error))
+    saved = job_answer(workflow_store.save_workflow, name, definition,
+                       create=bool(data.get('create')), **values)
+    job_scheduler.refresh()
+    events.poke_jobs()
+    return present_workflow(saved)
+
+
+@api.delete('/delete-workflow', dependencies=JOBS)
+def delete_workflow(name: str):
+    """Delete a workflow with its versions; its runs stay until their
+    retention ends. A workflow running or waiting is refused."""
+    job_answer(workflow_store.delete_workflow, name)
+    job_scheduler.refresh()
+    events.poke_jobs()
+    return {'status': 200}
+
+
+@api.post('/set-workflow-status', dependencies=JOBS)
+def set_workflow_status(name: str, enabled: bool):
+    """Switch a workflow on or off: off is not scheduled, a manual run is
+    still possible."""
+    job_answer(workflow_store.set_status, name, enabled)
+    job_scheduler.refresh()
+    events.poke_jobs()
+    return {'status': 200}
+
+
+@api.post('/save-workflow-schedule', dependencies=JOBS)
+def save_workflow_schedule(data: dict = fastapi.Body(...)):
+    """Set the schedule of a workflow, the units of a control schedule
+    ({mday, wday, hour, min, sec}); no units: not scheduled. A new
+    version."""
+    try:
+        config_json = job_store.schedule_json(data.get('schedule'))
+    except (ValueError, TypeError, AttributeError) as error:
+        raise fastapi.HTTPException(status_code=422, detail=str(error))
+    saved = job_answer(workflow_store.write_schedule, data.get('name'),
+                       config_json)
+    job_scheduler.refresh()
+    events.poke_jobs()
+    return present_workflow(saved)
+
+
+@api.post('/run-workflow', dependencies=JOBS)
+def run_workflow(name: str, data: dict | None = fastapi.Body(None)):
+    """Start a run of a workflow. `parameters` of the body give values of the
+    workflow's parameters for this run. A workflow that is running or waiting
+    is refused when it may not overlap with itself; one without steps is
+    refused."""
+    run_id = job_answer(workflow_manager.submit, name, job_store.MANUAL,
+                        requested_by=auth.current().requester,
+                        parameters=(data or {}).get('parameters'))
+    events.poke_jobs()
+    return {'status': 200, 'run_id': run_id}
+
+
+@api.post('/cancel-workflow-run', dependencies=JOBS)
+def cancel_workflow_run(run_id: int):
+    """Cancel a running workflow of this server: the step that runs is
+    canceled and the rest skipped."""
+    if not workflow_manager.cancel(run_id):
+        row = job_answer(workflow_store.read_run, run_id)
+        if row and row['status'] in job_store.ACTIVE:
+            raise fastapi.HTTPException(
+                status_code=409,
+                detail=f'The run belongs to {row["runner"]}, cancel it '
+                       'there.')
+        raise fastapi.HTTPException(
+            status_code=404,
+            detail='Not a run of this server, or it has finished.')
+    events.poke_jobs()
+    return {'status': 200}
+
+
+@api.get('/get-workflow-runs', dependencies=JOBS)
+def get_workflow_runs(name: str | None = None,
+                      limit: int = fastapi.Query(100, ge=1, le=1000),
+                      hide_unmet: bool = False):
+    """Get the runs of a workflow, or of every workflow, latest first,
+    without their steps and log. `hide_unmet` leaves out the runs that the
+    condition of the workflow stopped."""
+    workflow_id = job_answer(workflow_store.get_workflow, name)[
+        'workflow_id'] if name else None
+    return job_answer(workflow_store.read_runs, workflow_id, limit,
+                      hide_unmet)
+
+
+@api.get('/get-workflow-run', dependencies=JOBS)
+def get_workflow_run(run_id: int):
+    """Get one run of a workflow with its steps (`steps`: the job, the run
+    of the job `job_run_id`, its status and message) and its log (`lines`,
+    `run_log`). Step statuses are those of a run, `W` (waiting for its turn)
+    and `K` (skipped)."""
+    row = job_answer(workflow_store.read_run, run_id)
+    if not row:
+        raise fastapi.HTTPException(
+            status_code=404, detail=f'Workflow run {run_id} not found')
+    return row
+
+
+@api.get('/get-workflow-versions', dependencies=JOBS)
+def get_workflow_versions(name: str):
+    """Get the versions of a workflow, the newest first, with their
+    definitions (secret values hidden)."""
+    row = job_answer(workflow_store.get_workflow, name)
+    versions = job_answer(workflow_store.read_versions, row['workflow_id'])
+    for item in versions:
+        item['definition'] = job_definition.mask_secrets(
+            json.loads(item['definition']))
+    return versions
 
 
 scopes.check_routes(api)
