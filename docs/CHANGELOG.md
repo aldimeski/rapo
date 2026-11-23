@@ -13,6 +13,7 @@ New tables of the transfers, the jobs and the workflows and a row `RAPO.JOBS` of
 (`migrations/v0.8.7.5/upgrade.sql`); new sections `[TRANSFER]` and `[JOBS]` of `rapo.ini`; new requirement `paramiko`; new
 access area *Jobs*. **Stop every server before the upgrade and start none of v0.8.7 after it** (`migrations/v0.8.7.5/README.md`).
 
+- **Groups of transfers**: transfers run one after another by a schedule of the group, with a history, a joint log and one mail on a failure; a transfer started while it runs waits instead of being refused; each transfer shows all its next starts ([docs/transfer-groups.md](transfer-groups.md)). A job can be renamed.
 - **File transfers**: the logic of filetransfer-py runs inside rapo (`rapo/transfer/`), params as `.param` files or in the database, scheduled by rapo in a process of their own, log in the database, crontab detection on Linux; **off by default** (`[TRANSFER] enabled`), switched on and off at once from the *Configuration* tab ([docs/transfer.md](transfer.md)).
 - **Jobs** (RAJO): SQL, transfers, programs and scripts with *pre*, *condition*, *main* and *post* parts, parameters with secrets, timeout, overlap and versions, run by **a job scheduler of its own** in `[JOBS] parallelism` slots, with a **failure mail** ([docs/jobs.md](jobs.md), [docs/jobs-design.md](jobs-design.md)).
 - **Workflows**: jobs run one after another; an error stops the workflow as an error with one mail, a condition not met or a cancel stops it as a warning ([docs/jobs.md](jobs.md#workflows)).

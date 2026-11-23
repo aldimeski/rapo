@@ -531,6 +531,22 @@ def check_condition(condition, ctx, problems, check_paths=False, kinds=None,
     _check_condition(condition, ctx, problems, check_paths, kinds, label)
 
 
+def rename_target(condition, kind, old, new):
+    """Rename the target of type `kind` and name `old` in a RUN_STATUS
+    condition, in place. Returns whether there was one."""
+    if not (isinstance(condition, dict)
+            and condition.get('kind') == 'RUN_STATUS'
+            and isinstance(condition.get('targets'), list)):
+        return False
+    found = False
+    for target in condition['targets']:
+        if (isinstance(target, dict) and target.get('type') == kind
+                and str(target.get('name') or '').strip() == old):
+            target['name'] = new
+            found = True
+    return found
+
+
 def _check_condition(condition, ctx, problems, check_paths, kinds=None,
                      label='Condition'):
     if not isinstance(condition, dict):

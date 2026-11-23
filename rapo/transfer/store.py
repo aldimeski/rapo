@@ -60,7 +60,9 @@ run_table = sa.Table(
     sa.Column('run_log', sa.Text),
     sa.Column('runner', sa.String(255)),
     sa.Column('requested_by', sa.String(256)),
-    sa.Column('log_lines', sa.Integer))
+    sa.Column('log_lines', sa.Integer),
+    # The run of a group of transfers that started it.
+    sa.Column('group_run_id', sa.Integer))
 # The log lines of the runs of params with LogDatabase:Y, one row per line.
 log_table = sa.Table(
     'rapo_transfer_log', metadata,
@@ -481,12 +483,13 @@ def delete_schedule(name):
 # The runs
 
 def add_run(name, trigger, scheduled_time=None, requested_by=None,
-            runner=None):
-    """Record an initiated run, get its ID."""
+            runner=None, group_run_id=None):
+    """Record an initiated run, get its ID. A run started by a group of
+    transfers says which run of the group."""
     result = _execute(run_table.insert().values(
         param_name=name, trigger_type=trigger, scheduled_time=scheduled_time,
         queued_time=now(), status=INITIATED, runner=runner,
-        requested_by=requested_by))
+        requested_by=requested_by, group_run_id=group_run_id))
     run_id = result.inserted_primary_key[0]
     if run_id is None:
         run_id = _execute(sa.select(sa.func.max(run_table.c.run_id)).where(
@@ -512,6 +515,16 @@ def read_runs(name=None, limit=100):
     except sa.exc.DatabaseError as error:
         _missing_logged(error)
         return []
+
+
+def read_status(run_id):
+    """Get {status, start_time, end_time, message, transferred, failed} of a
+    run, None when there is none."""
+    return _execute(sa.select(
+        run_table.c.status, run_table.c.start_time, run_table.c.end_time,
+        run_table.c.message, run_table.c.transferred,
+        run_table.c.failed).where(run_table.c.run_id == run_id),
+        as_dict=True)
 
 
 def read_run(run_id):

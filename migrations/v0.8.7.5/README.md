@@ -6,7 +6,9 @@ What the release contains is in the [change log](CHANGELOG.md).
 The release adds the file transfers, the jobs and the workflows: the tables `rapo_transfer_param`,
 `rapo_transfer_schedule`, `rapo_transfer_run`, `rapo_transfer_log`, `rapo_job`, `rapo_job_version`, `rapo_job_run`,
 `rapo_job_log`, `rapo_job_event`, `rapo_workflow`, `rapo_workflow_version`, `rapo_workflow_run`,
-`rapo_workflow_run_step` and `rapo_workflow_log`, a row `RAPO.JOBS` of `rapo_scheduler`, the sections `[TRANSFER]` and
+`rapo_workflow_run_step`, `rapo_workflow_log`, the tables of the groups of transfers (`rapo_transfer_group`,
+`rapo_transfer_group_member`, `rapo_transfer_group_run`, `rapo_transfer_group_run_step`, and the column
+`rapo_transfer_run.group_run_id`), a row `RAPO.JOBS` of `rapo_scheduler`, the sections `[TRANSFER]` and
 `[JOBS]` of `rapo.ini`, and the Python package `paramiko`.
 
 **Stop every Rapo server that works on the database before step 3, and start none of v0.8.7 after it.** The scheduler
@@ -49,13 +51,14 @@ Task Scheduler that run as that user, with PowerShell. The commands are shown in
 
 ## From v0.8.8 to v0.12.0
 
-These releases were withdrawn and are part of v0.8.7.5. Their schema is the schema of v0.8.7.5, so an installation on
-v0.10.0, v0.11.0 or v0.12.0 needs no `upgrade.sql` (on v0.8.8, v0.8.9 or v0.9.0 run it: it makes only what is missing).
-Take the new source and restart:
+These releases were withdrawn and are part of v0.8.7.5. An installation on any of them runs `upgrade.sql` once more:
+it makes only what is missing, which for v0.10.0, v0.11.0 and v0.12.0 is the groups of transfers (section 4; the Transfers
+tab does not load without the column `rapo_transfer_run.group_run_id`). Take the new source, upgrade the schema and restart:
 ```bash
 git fetch --tags --force --prune-tags
 git checkout v0.8.7.5
 ./install.sh
+sqlplus <user>/<password>@<database> @migrations/v0.8.7.5/upgrade.sql
 .venv/bin/rapo-server stop && .venv/bin/rapo-server start
 ```
 On v0.8.8 the file transfers had no switch and were always on: to keep them, set `[TRANSFER] enabled=True`.

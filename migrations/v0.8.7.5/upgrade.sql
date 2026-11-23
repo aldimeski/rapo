@@ -5,7 +5,10 @@
 --   2. the jobs (RAJO): rapo_job, rapo_job_version, rapo_job_run, rapo_job_log,
 --      rapo_job_event and the lease row RAPO.JOBS of rapo_scheduler;
 --   3. the workflows: rapo_workflow, rapo_workflow_version, rapo_workflow_run,
---      rapo_workflow_run_step, rapo_workflow_log and rapo_job_event.workflow_id.
+--      rapo_workflow_run_step, rapo_workflow_log and rapo_job_event.workflow_id;
+--   4. the groups of transfers: rapo_transfer_group, rapo_transfer_group_member,
+--      rapo_transfer_group_run, rapo_transfer_group_run_step and
+--      rapo_transfer_run.group_run_id.
 -- Re-runnable: every part creates only what is missing.
 
 -- 1. File transfers
@@ -369,6 +372,103 @@ begin
    where table_name = 'RAPO_JOB_EVENT' and column_name = 'WORKFLOW_ID';
   if v_count = 0 then
     execute immediate 'alter table rapo_job_event add (workflow_id number(*, 0))';
+  end if;
+end;
+/
+
+-- 4. Groups of transfers
+
+declare
+  v_count number;
+  procedure make(p_kind varchar2, p_name varchar2, p_sql varchar2) is
+  begin
+    if p_kind = 'table' then
+      select count(*) into v_count from user_tables
+       where table_name = upper(p_name);
+    elsif p_kind = 'sequence' then
+      select count(*) into v_count from user_sequences
+       where sequence_name = upper(p_name);
+    else
+      select count(*) into v_count from user_indexes
+       where index_name = upper(p_name);
+    end if;
+    if v_count = 0 then
+      execute immediate p_sql;
+    end if;
+  end;
+begin
+  make('sequence', 'rapo_transfer_group_seq',
+       'create sequence rapo_transfer_group_seq increment by 1 start with 1 nocache');
+  make('table', 'rapo_transfer_group', q'[
+    create table rapo_transfer_group (
+      group_id        number(*, 0) default rapo_transfer_group_seq.nextval not null,
+      group_name      varchar2(128 char) not null,
+      description     varchar2(500 char),
+      schedule_config varchar2(4000 char),
+      status          varchar2(1 char) default 'Y' not null,
+      notify_email    varchar2(500 char),
+      overlap         varchar2(8 char) default 'skip' not null,
+      created_date    date default sysdate not null,
+      created_by      varchar2(256 char),
+      updated_date    date default sysdate not null,
+      updated_by      varchar2(256 char),
+      constraint rapo_transfer_group_pk primary key (group_id),
+      constraint rapo_transfer_group_name_uq unique (group_name),
+      constraint rapo_transfer_group_ck check (status in ('Y', 'N')),
+      constraint rapo_transfer_group_ov_ck check (overlap in ('skip', 'queue', 'allow'))
+    )]');
+  make('table', 'rapo_transfer_group_member', q'[
+    create table rapo_transfer_group_member (
+      group_id   number(*, 0) not null,
+      position   number(*, 0) not null,
+      param_name varchar2(128 char) not null,
+      constraint rapo_transfer_group_member_pk primary key (group_id, position)
+    )]');
+  make('sequence', 'rapo_transfer_group_run_seq',
+       'create sequence rapo_transfer_group_run_seq increment by 1 start with 1 nocache');
+  make('table', 'rapo_transfer_group_run', q'[
+    create table rapo_transfer_group_run (
+      run_id         number(*, 0) default rapo_transfer_group_run_seq.nextval not null,
+      group_id       number(*, 0) not null,
+      group_name     varchar2(128 char) not null,
+      trigger_type   varchar2(16 char) not null,
+      scheduled_time date,
+      queued_time    date default sysdate not null,
+      start_time     date,
+      end_time       date,
+      status         varchar2(1 char) default 'I' not null,
+      step_no        number(*, 0),
+      steps_total    number(*, 0),
+      message        varchar2(4000 char),
+      run_log        clob,
+      runner         varchar2(255 char),
+      requested_by   varchar2(256 char),
+      mail_status    varchar2(200 char),
+      constraint rapo_transfer_group_run_pk primary key (run_id)
+    )]');
+  make('index', 'rapo_transfer_group_run_ix',
+       'create index rapo_transfer_group_run_ix on rapo_transfer_group_run (group_id, queued_time)');
+  make('index', 'rapo_transfer_group_run_time_ix',
+       'create index rapo_transfer_group_run_time_ix on rapo_transfer_group_run (queued_time)');
+  make('table', 'rapo_transfer_group_run_step', q'[
+    create table rapo_transfer_group_run_step (
+      run_id          number(*, 0) not null,
+      step_no         number(*, 0) not null,
+      param_name      varchar2(128 char) not null,
+      transfer_run_id number(*, 0),
+      status          varchar2(1 char) default 'W' not null,
+      start_time      date,
+      end_time        date,
+      message         varchar2(4000 char),
+      constraint rapo_transfer_group_step_pk primary key (run_id, step_no),
+      constraint rapo_transfer_group_step_ck check (status in ('W', 'I', 'S', 'D', 'E', 'C'))
+    )]');
+
+  -- A transfer run started by a group says which run of the group.
+  select count(*) into v_count from user_tab_columns
+   where table_name = 'RAPO_TRANSFER_RUN' and column_name = 'GROUP_RUN_ID';
+  if v_count = 0 then
+    execute immediate 'alter table rapo_transfer_run add (group_run_id number(*, 0))';
   end if;
 end;
 /

@@ -24,6 +24,7 @@ from . import schedule
 from .control import Control, Parser
 from .lease import Lease, SCHEDULER_ROW, RENEWED, LOST
 from .runner import runner, get_runner_name
+from ..transfer.groups import manager as transfer_groups
 from ..transfer.manager import manager as transfers
 
 
@@ -304,6 +305,11 @@ class Scheduler:
             transfers.fire(since, now)
         except Exception:
             logger.error()
+        # So are the groups of transfers.
+        try:
+            transfer_groups.fire(since, now)
+        except Exception:
+            logger.error()
         for moment, name, control_id in sorted(fires):
             # A pass that took longer than the lease renews it here instead of
             # at the next step, so a server that lost the lease while it was
@@ -402,6 +408,10 @@ class Scheduler:
             transfers.maintain()
         except Exception:
             logger.error()
+        try:
+            transfer_groups.maintain()
+        except Exception:
+            logger.error()
         logger.info('Maintenance performed')
 
     def _delay(self):
@@ -418,13 +428,14 @@ class Scheduler:
             fire = schedule.next_fire(item['schedule'], after)
             if fire:
                 wakes.append(fire[0].timestamp())
-        try:
-            wake = transfers.next_wake(after)
-        except Exception:
-            logger.error()
-            wake = None
-        if wake:
-            wakes.append(wake)
+        for source in (transfers, transfer_groups):
+            try:
+                wake = source.next_wake(after)
+            except Exception:
+                logger.error()
+                wake = None
+            if wake:
+                wakes.append(wake)
         return max(min(wakes)-now, 0)
 
     def _notify(self):

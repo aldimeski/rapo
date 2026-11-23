@@ -13,6 +13,7 @@ import os
 import shutil
 import sys
 import tempfile
+import threading
 import types
 import unittest
 
@@ -35,10 +36,13 @@ class SqliteDatabase:
         self.engine = sa.create_engine(
             'sqlite://', poolclass=sa.pool.StaticPool,
             connect_args={'check_same_thread': False})
+        # One connection is shared, so the statements of the threads of the
+        # tests of the managers are run one at a time.
+        self.lock = threading.RLock()
 
     def execute(self, statement, auto_commit=True, as_table=False,
                 as_dict=False, as_scalar=False, **kwargs):
-        with self.engine.begin() as connection:
+        with self.lock, self.engine.begin() as connection:
             result = connection.execute(statement)
             if as_table:
                 return [dict(row._mapping) for row in result]
@@ -782,12 +786,43 @@ class ManagerTests(unittest.TestCase):
         self.assertEqual(run['status'], 'C')
         self.assertIn('late', run['message'])
 
-    def test_one_run_of_a_param_at_a_time(self):
+    def test_one_run_of_a_param_at_a_time_the_next_one_waits(self):
         store.write('once', self.TEXT, store.FILE, create=True)
-        self.manager.submit('once', manager.MANUAL)
-        with self.assertRaises(store.StoreError) as raised:
-            self.manager.submit('once', manager.MANUAL)
-        self.assertEqual(raised.exception.status, 409)
+        store.write('other', self.TEXT, store.FILE, create=True)
+        first = self.manager.submit('once', manager.MANUAL)
+        second = self.manager.submit('once', manager.MANUAL)
+        self.assertNotEqual(first, second)
+        self.assertEqual(self.manager.pending[0].run_id, first)
+        # The first starts; the second may not while it is going, and
+        # another param may pass it.
+        self.manager.running.append(self.manager.pending.popleft())
+        self.assertIsNone(self.manager._eligible())
+        third = self.manager.submit('other', manager.MANUAL)
+        self.assertEqual(self.manager._eligible().run_id, third)
+        self.manager.pending.remove(self.manager._eligible())
+        # When the first has ended the second is next.
+        self.manager.running.clear()
+        self.assertEqual(self.manager._eligible().run_id, second)
+
+    def test_runs_of_the_same_param_follow_in_the_order_they_were_started(
+            self):
+        store.write('once', self.TEXT, store.FILE, create=True)
+        ids = [self.manager.submit('once', manager.MANUAL) for _ in range(3)]
+        order = []
+        while self.manager.pending:
+            job = self.manager._eligible()
+            self.assertIsNotNone(job)
+            order.append(job.run_id)
+            self.manager.pending.remove(job)
+        self.assertEqual(order, ids)
+
+    def test_a_run_is_done_when_it_is_finished(self):
+        store.write('fin', self.TEXT, store.FILE, create=True)
+        job = self.manager.enqueue('fin', manager.MANUAL)
+        self.assertFalse(job.done.is_set())
+        self.manager.pending.remove(job)
+        self.manager._finish(job, 'D', 'ok')
+        self.assertTrue(job.done.is_set())
 
     def test_cancel_a_queued_run(self):
         store.write('c', self.TEXT, store.FILE, create=True)

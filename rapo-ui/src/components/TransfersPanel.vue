@@ -11,20 +11,29 @@
       </span>
     </div>
 
-    <q-banner v-if="data && !data.param_dir" dense class="bg-amber-1 text-amber-10 q-ma-sm">
+    <q-tabs v-if="data" v-model="sub" dense align="left" class="text-blue-grey-8" active-color="teal" indicator-color="teal">
+      <q-tab name="transfers" label="Transfers" icon="fas fa-exchange-alt" no-caps />
+      <q-tab name="groups" icon="fas fa-layer-group" no-caps>
+        <div class="q-tab__label">Groups<span v-if="data.groups_available !== false && groupCount" class="q-ml-xs text-grey-7">({{ groupCount }})</span></div>
+      </q-tab>
+    </q-tabs>
+    <q-separator v-if="data" />
+    <transfer-groups-panel v-if="data && sub === 'groups'" :transfer-names="transferNames" @changed="load()" />
+
+    <q-banner v-if="sub === 'transfers' && data && !data.param_dir" dense class="bg-amber-1 text-amber-10 q-ma-sm">
       <template v-slot:avatar><q-icon name="fas fa-exclamation-triangle" color="amber-8" size="xs" /></template>
       <code>[TRANSFER] param_dir</code> is not set in rapo.ini: params can be kept in the database only.
     </q-banner>
-    <div v-if="data && !data.crontab_supported" class="text-grey-7 text-caption q-ma-sm">
+    <div v-if="sub === 'transfers' && data && !data.crontab_supported" class="text-grey-7 text-caption q-ma-sm">
       <q-icon name="fas fa-info-circle" class="q-mr-xs" />This server is not Linux: the crontab is not read, so transfers are started by the rapo scheduler or by hand only.
     </div>
-    <q-banner v-if="data && !data.database_available" dense class="bg-amber-1 text-amber-10 q-ma-sm">
+    <q-banner v-if="sub === 'transfers' && data && !data.database_available" dense class="bg-amber-1 text-amber-10 q-ma-sm">
       <template v-slot:avatar><q-icon name="fas fa-exclamation-triangle" color="amber-8" size="xs" /></template>
       The transfer tables are missing in the database: run <code>migrations/v0.8.7.5/upgrade.sql</code>. Params in the folder still run, but their schedule and history
       can not be kept.
     </q-banner>
 
-      <div class="row items-center q-pa-sm q-gutter-sm">
+      <div v-show="sub === 'transfers'" class="row items-center q-pa-sm q-gutter-sm">
         <q-input v-model="search" dense outlined clearable debounce="200" placeholder="Search param, script or description" class="col-4">
           <template v-slot:prepend><q-icon name="fas fa-search" /></template>
         </q-input>
@@ -37,27 +46,28 @@
         </q-btn>
         <q-btn v-if="$can('datasources', 'edit')" color="teal" no-caps icon="fas fa-plus" label="New transfer" @click="openEdit(null)" />
       </div>
-      <q-separator />
+      <q-separator v-show="sub === 'transfers'" />
 
-      <load-error-notice v-if="loadError" :message="`The transfers could not be loaded: ${loadError}`" @retry="load()" />
-      <q-markup-table v-else flat dense class="col scroll transfers-table">
+      <load-error-notice v-if="sub === 'transfers' && loadError" :message="`The transfers could not be loaded: ${loadError}`" @retry="load()" />
+      <q-markup-table v-else-if="sub === 'transfers'" flat dense class="col scroll transfers-table">
         <thead>
           <tr class="bg-blue-grey-2">
             <th class="text-left">Param</th>
             <th class="text-left" title="Where the param is kept: a .param file in the folder of rapo.ini [TRANSFER] param_dir, or a row of the database">Kept in</th>
             <th class="text-left" title="What starts the transfer: the scheduler of rapo, or the crontab of the server user">Started by</th>
             <th class="text-left">Schedule</th>
-            <th class="text-left" title="The earliest next start, whoever starts it">Next start</th>
+            <th class="text-left" title="Where the transfer is a step of: the group and its place in it">Groups</th>
+            <th class="text-left" title="Every next start: its own schedule, each group that has it, the crontab. The earliest first">Next start</th>
             <th class="text-left">Last run</th>
             <th></th>
           </tr>
         </thead>
         <tbody v-if="!data">
-          <skeleton-rows :rows="5" :columns="['text', 'QChip', 'QChip', 'text', 'text', 'text', null]" />
+          <skeleton-rows :rows="5" :columns="['text', 'QChip', 'QChip', 'text', 'text', 'text', 'text', null]" />
         </tbody>
         <tbody v-else-if="!rows.length">
           <tr>
-            <td colspan="7" class="text-grey-7 text-center">{{ data.params.length ? "No transfer matches" : "No transfers yet" }}</td>
+            <td colspan="8" class="text-grey-7 text-center">{{ data.params.length ? "No transfer matches" : "No transfers yet" }}</td>
           </tr>
         </tbody>
         <tbody v-else>
@@ -96,11 +106,20 @@
               </div>
               <span v-if="!startedBy(row).length" class="text-grey-6">Not scheduled</span>
             </td>
+            <td>
+              <div v-for="group in row.groups || []" :key="group.group_name" class="text-no-wrap" :class="{ 'text-grey-6': !group.enabled }">
+                <q-icon name="fas fa-layer-group" size="xs" color="indigo-5" class="q-mr-xs" />
+                <a class="cursor-pointer" v-keyboard:button @click="openGroups">{{ group.group_name }}</a>
+                <span class="text-caption text-grey-7"> &middot; {{ group.position }} of {{ group.size }}<template v-if="!group.enabled"> (off)</template></span>
+              </div>
+              <span v-if="!(row.groups || []).length" class="text-grey-6">&mdash;</span>
+            </td>
             <td class="text-no-wrap">
-              <template v-if="nextStart(row)">
-                <date-time-text :value="nextStart(row).when" />
-                <div class="text-caption text-grey-7">{{ nextStart(row).by }}</div>
-              </template>
+              <div v-for="(start, index) in starts(row)" :key="start.by + index" :class="{ 'text-grey-7 text-caption': index > 0 }">
+                <date-time-text :value="start.when" />
+                <span class="text-caption text-grey-7"> {{ start.by }}</span>
+                <q-tooltip v-if="start.title">{{ start.title }}</q-tooltip>
+              </div>
             </td>
             <td class="text-no-wrap">
               <template v-if="row.last_run">
@@ -170,9 +189,9 @@
         </tbody>
       </q-markup-table>
 
-    <transfer-edit-dialog v-model="editOpen" :name="editName" :param-dir="data && data.param_dir" :database-available="!data || data.database_available" @saved="load()" />
-    <transfer-schedule-dialog v-model="scheduleOpen" :row="scheduleRow" @saved="load()" />
-    <transfer-runs-dialog v-model="runsOpen" :name="runsName" />
+    <transfer-edit-dialog v-if="sub === 'transfers'" v-model="editOpen" :name="editName" :param-dir="data && data.param_dir" :database-available="!data || data.database_available" @saved="load()" />
+    <transfer-schedule-dialog v-if="sub === 'transfers'" v-model="scheduleOpen" :row="scheduleRow" @saved="load()" />
+    <transfer-runs-dialog v-if="sub === 'transfers'" v-model="runsOpen" :name="runsName" />
   </div>
 </template>
 
@@ -181,12 +200,13 @@ import DateTimeText from "./DateTimeText.vue";
 import LoadErrorNotice from "./LoadErrorNotice.vue";
 import SkeletonRows from "./SkeletonRows.vue";
 import TransferEditDialog from "./TransferEditDialog.vue";
+import TransferGroupsPanel from "./TransferGroupsPanel.vue";
 import TransferRunsDialog from "./TransferRunsDialog.vue";
 import TransferScheduleDialog from "./TransferScheduleDialog.vue";
 import { api, notifyError } from "../api";
 import { ACTIVE_RUN_STATUSES, runStatus, schedulerState } from "../constants";
 import { describeSchedule } from "../utils/schedule";
-import { escapeHtml, toMillis } from "../utils/format";
+import { escapeHtml, toDateTimeString, toMillis } from "../utils/format";
 
 const REFRESH_SECONDS = 5;
 
@@ -199,11 +219,13 @@ const SOURCES = {
 };
 
 export default {
-  components: { DateTimeText, LoadErrorNotice, SkeletonRows, TransferEditDialog, TransferRunsDialog, TransferScheduleDialog },
+  components: { DateTimeText, LoadErrorNotice, SkeletonRows, TransferEditDialog, TransferGroupsPanel, TransferRunsDialog, TransferScheduleDialog },
   data() {
     return {
       data: null,
       loadError: null,
+      // The list of the transfers, or their groups.
+      sub: this.$route.query.sub === "groups" ? "groups" : "transfers",
       rescanning: false,
       search: "",
       filter: "all",
@@ -218,6 +240,14 @@ export default {
   computed: {
     allRows() {
       return this.data ? this.data.params : [];
+    },
+    // The transfers a group can have: those rapo can run.
+    transferNames() {
+      return this.allRows.filter((row) => row.source !== "external").map((row) => row.param_name);
+    },
+    // The groups the transfers are in, counted once.
+    groupCount() {
+      return new Set(this.allRows.flatMap((row) => (row.groups || []).map((group) => group.group_name))).size;
     },
     chips() {
       const count = (test) => this.allRows.filter(test).length;
@@ -288,13 +318,32 @@ export default {
       }
       return chips;
     },
-    nextStart(row) {
+    // Every next start of the param, the earliest first: its own schedule, each group (where it is expected to start in it,
+    // which is the start of the group and what the steps before it took last time) and the crontab.
+    starts(row) {
+      if (row.next_starts) {
+        return row.next_starts.map((start) => {
+          if (start.source === "group") {
+            const where = `group ${start.name}, step ${start.position}`;
+            return {
+              when: start.next_fire,
+              by: where,
+              title: start.position > 1 ? `${where}: the group starts at ${toDateTimeString(start.group_start)}; this step follows the ones before it, so the time is an estimate` : `${where}: the first step starts with the group`,
+            };
+          }
+          return { when: start.next_fire, by: start.source === "rapo" ? "own schedule" : "crontab", title: null };
+        });
+      }
+      // The group tables are missing: what the list itself knows.
       const starts = [];
       if (row.rapo && row.rapo.enabled && row.rapo.next_fire) {
-        starts.push({ when: row.rapo.next_fire, by: "rapo scheduler" });
+        starts.push({ when: row.rapo.next_fire, by: "own schedule", title: null });
       }
-      row.crontab.filter((entry) => entry.next_fire).forEach((entry) => starts.push({ when: entry.next_fire, by: "crontab" }));
-      return starts.sort((a, b) => toMillis(a.when) - toMillis(b.when))[0] || null;
+      row.crontab.filter((entry) => entry.next_fire).forEach((entry) => starts.push({ when: entry.next_fire, by: "crontab", title: null }));
+      return starts.sort((a, b) => toMillis(a.when) - toMillis(b.when));
+    },
+    openGroups() {
+      this.sub = "groups";
     },
     async load(rescan = false) {
       this.rescanning = rescan;
@@ -375,17 +424,27 @@ export default {
         });
     },
     remove(row) {
+      const groups = (row.groups || []).map((group) => group.group_name);
       this.$q
         .dialog({
-          title: "Delete param",
-          message: `Delete ${row.param_name}${row.source === "file" ? " (its .param file)" : ""} and its schedule? The history of its runs stays.`,
+          title: groups.length ? "Delete a param that is in groups" : "Delete param",
+          message:
+            `Delete ${escapeHtml(row.param_name)}${row.source === "file" ? " (its .param file)" : ""} and its schedule? The history of its runs stays.` +
+            (groups.length
+              ? `<div class="q-mt-sm">It is a step of the group${groups.length === 1 ? "" : "s"} <b>${escapeHtml(groups.join(", "))}</b> and is taken out of ${groups.length === 1 ? "it" : "them"}; a group left without a transfer is switched off.</div>`
+              : ""),
+          html: true,
           cancel: true,
           persistent: true,
-          ok: { label: "Delete", color: "deep-orange", flat: true },
+          ok: { label: groups.length ? "Delete and take it out" : "Delete", color: "deep-orange", flat: true },
         })
         .onOk(async () => {
           try {
-            await api("delete-transfer", { method: "DELETE", params: { name: row.param_name } });
+            const answer = await api("delete-transfer", { method: "DELETE", params: { name: row.param_name, confirm: groups.length ? "true" : null } });
+            const off = (answer.groups || []).filter((item) => item.switched_off).map((item) => item.group_name);
+            if (off.length) {
+              this.$q.notify({ type: "warning", message: `${off.join(", ")} ${off.length === 1 ? "has" : "have"} no transfers left and ${off.length === 1 ? "was" : "were"} switched off.` });
+            }
             await this.load();
           } catch (error) {
             notifyError(`Failed to delete ${row.param_name}.`, error);

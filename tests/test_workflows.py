@@ -431,3 +431,80 @@ class RunStoreTests(StoreCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class RenameJobTests(StoreCase):
+    def waiting(self, target, name='wait'):
+        return {'main': {'type': 'SQL', 'text': 'select 1'},
+                'condition': {'kind': 'RUN_STATUS', 'targets': [
+                    {'type': 'job', 'name': target,
+                     'window': {'kind': 'today'}}]}}
+
+    def test_the_name_changes_and_the_runs_go_with_it(self):
+        saved = store.read_job('load')
+        run_id = store.add_run(saved, store.MANUAL)
+        store.update_run(run_id, status=store.DONE)
+        renamed = store.rename_job('load', 'ingest')
+        self.assertEqual(renamed['job_name'], 'ingest')
+        self.assertIsNone(store.read_job('load'))
+        self.assertEqual(store.read_run(run_id)['job_name'], 'ingest')
+        self.assertEqual(store.read_job('ingest')['job_id'], saved['job_id'])
+
+    def test_a_name_in_use_a_bad_name_and_a_running_job_are_refused(self):
+        for new, status in (('process', 409), ('bad name', 400)):
+            with self.assertRaises(store.StoreError) as caught:
+                store.rename_job('load', new)
+            self.assertEqual(caught.exception.status, status)
+        run_id = store.add_run(store.read_job('load'), store.MANUAL)
+        with self.assertRaises(store.StoreError) as caught:
+            store.rename_job('load', 'ingest')
+        self.assertEqual(caught.exception.status, 409)
+        store.update_run(run_id, status=store.DONE)
+        store.rename_job('load', 'ingest')
+        with self.assertRaises(store.StoreError) as caught:
+            store.rename_job('load', 'again')
+        self.assertEqual(caught.exception.status, 404)
+
+    def test_the_same_name_changes_nothing(self):
+        self.assertEqual(store.rename_job('load', 'load')['version'], 1)
+
+    def test_workflows_follow_the_job(self):
+        self.save('nightly', flow('load', 'process'))
+        self.save('other', flow('report'))
+        store.rename_job('load', 'ingest')
+        changed = workflow_store.rename_job('load', 'ingest')
+        self.assertEqual(changed, [{'workflow_name': 'nightly'}])
+        row = workflow_store.read_workflow('nightly')
+        self.assertEqual(
+            workflow.job_names(json.loads(row['definition'])),
+            ['ingest', 'process'])
+        self.assertEqual(row['version'], 2)
+        self.assertEqual(workflow_store.read_workflow('other')['version'], 1)
+
+    def test_a_workflow_that_runs_blocks_the_rename(self):
+        saved = self.save('nightly', flow('load', 'process'))
+        run_id = workflow_store.add_run(saved, 'manual')
+        with self.assertRaises(store.StoreError) as caught:
+            workflow_store.rename_job('load', 'ingest')
+        self.assertEqual(caught.exception.status, 409)
+        workflow_store.update_run(run_id, status=store.DONE)
+        workflow_store.rename_job('load', 'ingest')
+
+    def test_conditions_that_wait_for_the_job_follow_it(self):
+        store.save_job('wait', self.waiting('load'), ctx=context())
+        store.save_job('stay', self.waiting('process'), ctx=context())
+        self.save('nightly', flow('wait', condition={
+            'kind': 'RUN_STATUS', 'targets': [
+                {'type': 'job', 'name': 'load',
+                 'window': {'kind': 'today'}}]}))
+        store.rename_job('load', 'ingest')
+        workflow_store.rename_job('load', 'ingest')
+
+        def target(name):
+            definition = json.loads(store.read_job(name)['definition'])
+            return definition['condition']['targets'][0]['name']
+        self.assertEqual((target('wait'), target('stay')),
+                         ('ingest', 'process'))
+        flow_row = workflow_store.read_workflow('nightly')
+        condition = json.loads(flow_row['definition'])['condition']
+        self.assertEqual(condition['targets'][0]['name'], 'ingest')

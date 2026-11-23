@@ -117,7 +117,9 @@ no logging, so rapo warns and asks to confirm, and then sets `LogMode:None`.
 
 A run, scheduled or started with *Run now*, is recorded at once in `rapo_transfer_run` (status `I` initiated, `S`
 running, `D` done, `E` error, `C` canceled), waits in a queue for one of the `[TRANSFER] parallelism` slots of the server and
-is performed in its own process. The same param never runs twice at once on a server. A run ends in `E` when
+is performed in its own process. The same param never runs twice at once on a server: a run started while the param
+runs (by hand, by a schedule, by the crontab or by a group) waits behind it and starts when it has ended, the waiting
+runs in the order they were started. A run ends in `E` when
 any error was logged (a failed file, a missing directory, a bad param) and `[TRANSFER] timeout` stops one that takes
 too long. The log lines of a run (and the errors) are kept with the run and shown in *Run history*; the `LogDir`/`LogFile`
 of the param are written as before. `[TRANSFER] history_retention_days` bounds the history, and the scheduler's
@@ -139,8 +141,14 @@ There are two ways to start a transfer, and the list shows which one a param use
   seconds and *Rescan crontab* reads it again. Rapo only reads the crontab, it never changes it.
 
 The *Started by* column shows `Rapo`, `Crontab`, or `Twice!` when both start the same param, which would run it twice.
-The next start shown is the earliest of the two. The scan sees the crontab of this server only, and params are matched
+The *Next start* column lists every start of the param, the earliest first: its own schedule, each group it is in and the
+crontab. The scan sees the crontab of this server only, and params are matched
 by their file name: a script that builds the param path from a variable is matched on the part before `.param`.
+
+## Groups
+
+Several transfers can be put in a **group** that runs them one after another by a schedule of its own, with its own history
+and log; see [transfer-groups.md](transfer-groups.md).
 
 ## Windows
 

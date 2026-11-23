@@ -53,7 +53,7 @@ A scope is a level per area; a level includes the ones below it (`none` < `view`
 | `controls`    | view, edit                | `get-all-controls`, `get-schema-drift`, `get-control-versions`, datasource and view reads, `schedule-preview`, `get-next-fires` | | `save-control`, `delete-control`, schema update/recreate/check, orphan and output table drops, version deletes, `send-test-email`, `compile-view` |
 | `kpis`        | view, operate, edit       | KPI types, a control's KPIs, KPI history and runs, orphan list | `calculate-kpi`, `reingest-kpis`                           | `save-kpi-type`, `delete-kpi-type`, orphan KPI deletes/reassigns |
 | `scheduler`   | view, operate             | `scheduler-status`, `-upcoming`, `-events`, `get-missed-fires` | `scheduler-stop`, `scheduler-start`                        |                                                   |
-| `jobs`        | view, operate, edit       | `get-jobs`, `get-job`, `get-job-catalogue`, `get-job-runs`, `get-job-run`, `get-job-versions`, `job-scheduler-status`, `-upcoming`, `-events`, `get-job-transfer-params`, `-catalogue`, `get-job-transfer`, `get-workflows`, `get-workflow`, `get-workflow-runs`, `get-workflow-run`, `get-workflow-versions`, `get-dependency-targets`, `get-external-tasks` | `run-job`, `cancel-job-run`, `set-job-status`, `job-scheduler-stop`, `job-scheduler-start`, `run-workflow`, `cancel-workflow-run`, `set-workflow-status` | `save-job`, `delete-job`, `save-job-schedule`, `check-job`, `validate-job-transfer`, `save-job-transfer`, `save-workflow`, `delete-workflow`, `save-workflow-schedule`, `check-workflow` |
+| `jobs`        | view, operate, edit       | `get-jobs`, `get-job`, `get-job-catalogue`, `get-job-runs`, `get-job-run`, `get-job-versions`, `job-scheduler-status`, `-upcoming`, `-events`, `get-job-transfer-params`, `-catalogue`, `get-job-transfer`, `get-workflows`, `get-workflow`, `get-workflow-runs`, `get-workflow-run`, `get-workflow-versions`, `get-dependency-targets`, `get-external-tasks` | `run-job`, `cancel-job-run`, `set-job-status`, `job-scheduler-stop`, `job-scheduler-start`, `run-workflow`, `cancel-workflow-run`, `set-workflow-status` | `save-job`, `rename-job`, `delete-job`, `save-job-schedule`, `check-job`, `validate-job-transfer`, `save-job-transfer`, `save-workflow`, `delete-workflow`, `save-workflow-schedule`, `check-workflow` |
 | `datasources` | view, edit                | PDI Core datasources, directories, incoming files, archive, grammars, viewer settings |                       | Their saves and deletes, lanes (`set-ds-active`), directories, grammars, viewer settings |
 | `files`       | view, operate             | The file log: `get-files-day`, `get-ds-file-log(-text)`, `search-files`, `get-pdi-state` | `set-file-status`, lane locks, `check-ds-upload`, `upload-ds-file`, `refresh-file-summary` | |
 | `instance`    | view, operate, edit       | `parameters`, health and sessions, `get-config-catalogue`, `get-config-changes`, `get-temp-tables` | `drop-temp-tables`                | `set-config-option`, `reload-config`              |
@@ -1403,8 +1403,12 @@ reusing the last scan (`[TRANSFER] crontab_scan_interval`). The answer:
   only the crontab knows it), `description`, `modified`, `size`, `scheduling` (`rapo`, `crontab`, `both` or null),
   `rapo` (null, or `{config, enabled, scheduled, next_fire}`: the schedule units JSON of `schedule_config`),
   `crontab` (a list of `{cron, command, script, param_path, next_fire, user}`; `script` is null when the cron command
-  calls the transfer script itself), `running` (a run waits or runs on this server) and `last_run`;
-* `param_dir`, `database_available`, `crontab_scan`, `crontab_supported` (the host is Linux);
+  calls the transfer script itself), `running` (a run waits or runs on this server), `last_run`, `groups` (the groups
+  the param is a step of: `{group_name, position, size, enabled, scheduled, next_fire (of the group), expected_start
+  (when the param is expected to start in it), running}`) and `next_starts` (every start the param has, the earliest
+  first: `{source: rapo | group | crontab, name, next_fire, position}`) with `next_start` (the earliest);
+* `param_dir`, `database_available`, `crontab_scan`, `crontab_supported` (the host is Linux), `groups_available` (false
+  with `groups_error` while the tables of the groups are missing: the list is then without `groups` and `next_starts`);
 * `scheduler` - `{state, leader}` as `scheduler-status` reports them; `manager` - `{runner, active, capacity, queued,
   running}` of this server's transfer manager.
 
@@ -1439,8 +1443,10 @@ moved to a file loses `LogDatabase`.
 warnings (see `check-move-transfer`) and `confirm` is not true.
 
 #### `DELETE /api/delete-transfer`
-`name`: deletes a param (its file or its row) and its schedule; the history of its runs stays. `409` while a run
-waits or runs.
+`name`, `confirm` (false): deletes a param (its file or its row) and its schedule; the history of its runs stays. `409` while
+a run waits or runs, or while it is a step of a group that does. `409` too while it is a step of **groups**, until `confirm`
+is true; the message names them. With `confirm` it is taken out of them (the others move up) and a group left without a
+transfer is switched off; the answer lists them as `groups: [{group_name, members (left), switched_off}]`.
 
 #### `POST /api/save-transfer-schedule`
 Body `{name, schedule, enabled}`: `schedule` holds the units `{mday, wday, hour, min, sec}` of a control schedule
@@ -1448,20 +1454,71 @@ Body `{name, schedule, enabled}`: `schedule` holds the units `{mday, wday, hour,
 transfer, rapo performs it.
 
 #### `POST /api/run-transfer`
-`name`: initiates a run and queues it; answers `{run_id}`. `409` when the param already waits or runs.
+`name`: initiates a run and queues it; answers `{run_id}`. A param that already waits or runs does not refuse the
+new run: it waits behind the runs of the param ahead of it and starts when they have ended.
 
 #### `POST /api/cancel-transfer`
 `run_id`: cancels a waiting or running transfer of this server; `404` for a run of another server or one that ended.
 
 #### `GET /api/get-transfer-runs`
 `name` (optional), `limit` (100): the runs, latest first, as `{run_id, param_name, trigger_type, scheduled_time,
-queued_time, start_time, end_time, status, transferred, failed, message, runner, requested_by, log_lines}`. `trigger_type` is
-`schedule` or `manual`; `status` is `I` initiated, `S` running, `D` done, `E` error or `C` canceled.
+queued_time, start_time, end_time, status, transferred, failed, message, runner, requested_by, log_lines, group_run_id}`.
+`trigger_type` is `schedule`, `manual` or `group` (a step of a group; `group_run_id` is then the run of the group); `status` is `I` initiated, `S` running, `D` done, `E` error or `C` canceled.
 
 #### `GET /api/get-transfer-run`
 `run_id`: one run with its `run_log`, the lines the transfer logged. For a param with `LogDatabase:Y` they are read from
 `rapo_transfer_log`: `log_lines` is the number of lines the run logged and `log_trimmed` is true when fewer are left
 because only the newest `[TRANSFER] log_max_lines` lines of the param are kept.
+### Groups of transfers
+
+A group runs its transfers one after another (see [docs/transfer-groups.md](../transfer-groups.md)). The routes are off
+and answer `404` with the transfers (`[TRANSFER] enabled`), and `503` while the tables are missing (run
+`migrations/v0.8.7.5/upgrade.sql`). Reads need *Datasources: View*, `save-transfer-group`, `delete-transfer-group` and
+`set-transfer-group-status` *Datasources: Edit*, `run-transfer-group` and `cancel-transfer-group-run` *Files: Operate*.
+
+#### `GET /api/get-transfer-groups`
+Every group: `{group_name, group_id, description, status (Y/N), overlap, notify_email, schedule_config, scheduled,
+next_fire (of the group), running, last_run, members}`; `members` lists the transfers in their order as `{position,
+param_name, own_next_fire (by its own schedule), group_start (when it is expected to start in the group: the start of
+the group plus what the transfers before it took in their last run that ended Done), running, last_run}`. Also
+`manager` (`{runs: [...]}`, the runs of groups on this server) and `scheduler`.
+
+#### `GET /api/get-transfer-group`
+`name`: one group as above; `404` when there is none.
+
+#### `POST /api/save-transfer-group`
+Body `{name, members, description, notify_email, status, overlap, schedule, create}`: creates a group or changes it. `members`
+is the list of the names of the transfers in the order they are run (at least one; a name twice is refused with `422`
+naming the places, a transfer that does not exist too); `overlap` is `skip`, `queue` or `allow`; `schedule` holds the
+units `{mday, wday, hour, min, sec}` of a control schedule, null for none. What is not given stays as it was; a new group
+needs `members` and is on. `create` refuses an existing name (`409`). Answers `{group_name, members}`.
+
+#### `DELETE /api/delete-transfer-group`
+`name`: deletes a group, not its transfers; its runs stay until `[TRANSFER] history_retention_days` ends. `409` while a run
+of it waits or runs.
+
+#### `POST /api/set-transfer-group-status`
+`name`, `enabled`: switches a group on or off. An off group is not scheduled; a run by hand is still possible.
+
+#### `POST /api/run-transfer-group`
+`name`: starts the group; answers `{run_id}`, the run of the group. `409` while the group runs and its `overlap` is `skip`;
+`400` for a group without transfers.
+
+#### `POST /api/cancel-transfer-group-run`
+`run_id`: cancels a run of a group of this server: the transfer that goes is canceled and the ones after it are not
+started. `404` for a run of another server or one that ended.
+
+#### `GET /api/get-transfer-group-runs`
+`name` (optional), `limit` (100): the runs of the groups, latest first, without their log, as `{run_id, group_id, group_name,
+trigger_type (schedule, manual), scheduled_time, queued_time, start_time, end_time, status (I, S, D, E, C), step_no,
+steps_total, message, runner, requested_by, mail_status}`.
+
+#### `GET /api/get-transfer-group-run`
+`run_id`: one run with its `steps` (`{step_no, param_name, transfer_run_id, status (W waiting, I queued, S running, D, E,
+C), start_time, end_time, message, transfer}`; `transfer` is the run of the transfer: status, transferred, failed, times) and its
+whole log `run_log`: what the group did, and under each step the log of the run of its transfer, indented by four spaces
+and a bar.
+
 ### Jobs
 
 The jobs of `rapo/jobs/` (RAJO, see [docs/jobs-design.md](../jobs-design.md)): a job is SQL, a transfer, a program or a
@@ -1503,9 +1560,16 @@ that does not read at all answers `ok` false with its problem.
 
 #### `POST /api/save-job`
 Body `{name, definition, description, notify_email, status, schedule, create}`: creates a job, or changes it (the name
-is not changed). `description`, `notify_email` (addresses separated by `,` or `;`), `status` and `schedule` (the units
+is changed by `rename-job`). `description`, `notify_email` (addresses separated by `,` or `;`), `status` and `schedule` (the units
 of `save-job-schedule`, `null` for none) stay as they were when not given; `create` refuses an existing name (`409`). The definition is validated as `check-job` does, without the files
 having to exist yet. A change of the definition makes a new version. Answers the job.
+
+#### `POST /api/rename-job`
+`name`, `new_name`, `confirm` (false): calls a job another name. The runs of the job go with it, and so do the targets of
+the conditions of the other jobs and of the workflows that wait for it, and the steps of the workflows that have it (a new
+version of each). `409` while the job, or a workflow that has it as a step, is running or waiting; `409` for a name that is
+in use; `409` while the job is a step of **workflows**, until `confirm` is true. Answers the job, with the workflows
+changed as `workflows: [{workflow_name}]`. Needs the right to edit jobs.
 
 #### `DELETE /api/delete-job`
 `name`, `confirm` (false): deletes a job and its versions; its runs stay until `[JOBS] history_retention_days` ends. `409`

@@ -70,7 +70,10 @@ Besides the parts a job has a name, a description, an on/off switch, a schedule,
   go side by side.
 
 Every save of the definition or the schedule is a **version**; the *Versions* tab shows them and loads an older one into
-the editor, to be saved as a new version. The name of a job is not changed after it is created.
+the editor, to be saved as a new version. A job can be **renamed** in the editor (the *Name* field, saved with the rest). Its runs keep their history under the new
+name, and the steps and conditions of the workflows and the conditions of the other jobs that name it are changed too
+(a new version of each workflow); the editor asks first when the job is a step of workflows. A job that is running or
+waiting, or a step of a workflow that is, can not be renamed, and neither to a name that is in use.
 
 ## The types of a task
 

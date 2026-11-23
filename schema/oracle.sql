@@ -542,6 +542,7 @@ create table rapo_transfer_run (
   runner         varchar2(255 char),
   requested_by   varchar2(256 char),
   log_lines      number(*, 0),
+  group_run_id   number(*, 0),
   constraint rapo_transfer_run_pk primary key (run_id)
 );
 
@@ -569,6 +570,81 @@ create table rapo_transfer_log (
 
 create index rapo_transfer_log_run_ix on rapo_transfer_log (run_id, line_no);
 create index rapo_transfer_log_param_ix on rapo_transfer_log (param_name, log_id);
+
+-- Groups of transfers: a group is a named list of params (rapo_transfer_group_member, in the order
+-- they are run), with a schedule of its own. A run of a group (rapo_transfer_group_run) runs the
+-- params one after another, each as a run of rapo_transfer_run (group_run_id); a step is a row of
+-- rapo_transfer_group_run_step (W waiting, I queued, S running, D done, E error, C canceled).
+create sequence rapo_transfer_group_seq
+increment by 1
+start with 1
+nocache;
+
+create table rapo_transfer_group (
+  group_id        number(*, 0) default rapo_transfer_group_seq.nextval not null,
+  group_name      varchar2(128 char) not null,
+  description     varchar2(500 char),
+  schedule_config varchar2(4000 char),
+  status          varchar2(1 char) default 'Y' not null,
+  notify_email    varchar2(500 char),
+  overlap         varchar2(8 char) default 'skip' not null,
+  created_date    date default sysdate not null,
+  created_by      varchar2(256 char),
+  updated_date    date default sysdate not null,
+  updated_by      varchar2(256 char),
+  constraint rapo_transfer_group_pk primary key (group_id),
+  constraint rapo_transfer_group_name_uq unique (group_name),
+  constraint rapo_transfer_group_ck check (status in ('Y', 'N')),
+  constraint rapo_transfer_group_ov_ck check (overlap in ('skip', 'queue', 'allow'))
+);
+
+create table rapo_transfer_group_member (
+  group_id   number(*, 0) not null,
+  position   number(*, 0) not null,
+  param_name varchar2(128 char) not null,
+  constraint rapo_transfer_group_member_pk primary key (group_id, position)
+);
+
+create sequence rapo_transfer_group_run_seq
+increment by 1
+start with 1
+nocache;
+
+create table rapo_transfer_group_run (
+  run_id         number(*, 0) default rapo_transfer_group_run_seq.nextval not null,
+  group_id       number(*, 0) not null,
+  group_name     varchar2(128 char) not null,
+  trigger_type   varchar2(16 char) not null,
+  scheduled_time date,
+  queued_time    date default sysdate not null,
+  start_time     date,
+  end_time       date,
+  status         varchar2(1 char) default 'I' not null,
+  step_no        number(*, 0),
+  steps_total    number(*, 0),
+  message        varchar2(4000 char),
+  run_log        clob,
+  runner         varchar2(255 char),
+  requested_by   varchar2(256 char),
+  mail_status    varchar2(200 char),
+  constraint rapo_transfer_group_run_pk primary key (run_id)
+);
+
+create index rapo_transfer_group_run_ix on rapo_transfer_group_run (group_id, queued_time);
+create index rapo_transfer_group_run_time_ix on rapo_transfer_group_run (queued_time);
+
+create table rapo_transfer_group_run_step (
+  run_id          number(*, 0) not null,
+  step_no         number(*, 0) not null,
+  param_name      varchar2(128 char) not null,
+  transfer_run_id number(*, 0),
+  status          varchar2(1 char) default 'W' not null,
+  start_time      date,
+  end_time        date,
+  message         varchar2(4000 char),
+  constraint rapo_transfer_group_step_pk primary key (run_id, step_no),
+  constraint rapo_transfer_group_step_ck check (status in ('W', 'I', 'S', 'D', 'E', 'C'))
+);
 
 -- The jobs and the workflows (RAJO): what migrations/v0.8.7.5/upgrade.sql makes for an
 -- installation that was upgraded, a new installation gets here. A job is run by the job scheduler,

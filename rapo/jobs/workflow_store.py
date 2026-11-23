@@ -378,6 +378,61 @@ def remove_job(job_name):
     return changed
 
 
+def uses_job_now(job_name):
+    """Get the names of the workflows that have a run waiting or running and
+    the job in their steps."""
+    rows = _execute(sa.select(workflow_table).where(
+        workflow_table.c.workflow_id.in_(
+            sa.select(run_table.c.workflow_id).where(
+                run_table.c.status.in_(ACTIVE)))), as_table=True)
+    found = []
+    for row in rows:
+        try:
+            definition = json.loads(_text(row['definition']))
+        except ValueError:
+            continue
+        if job_name in workflows.job_names(definition):
+            found.append(row['workflow_name'])
+    return found
+
+
+def rename_job(old, new):
+    """Call the job `old` `new` in the steps and the condition of every
+    workflow that has it (a new version of each) and in the steps of their
+    runs. Returns [{workflow_name}] of the workflows changed."""
+    busy = uses_job_now(old)
+    if busy:
+        raise StoreError(f'Job {old} is a step of the workflow'
+                         f'{"" if len(busy) == 1 else "s"} '
+                         f'{", ".join(busy)} that is running or waiting.',
+                         409)
+    moment = now()
+    changed = []
+    for row in _execute(sa.select(workflow_table).order_by(
+            workflow_table.c.workflow_name), as_table=True):
+        try:
+            definition = json.loads(_text(row['definition']))
+        except ValueError:
+            continue
+        definition, found = workflows.rename_job(definition, old, new)
+        if not found:
+            continue
+        text = definitions.dumps(definition)
+        version = row['version'] + 1
+        _execute(workflow_table.update().where(
+            workflow_table.c.workflow_id == row['workflow_id']).values(
+            definition=text, version=version, updated_date=moment,
+            updated_by=user()))
+        _add_version(row['workflow_id'], version, text,
+                     row['schedule_config'], moment)
+        changed.append({'workflow_name': row['workflow_name']})
+        logger.info(f'Job {old} renamed {new} in workflow '
+                    f'{row["workflow_name"]}')
+    _execute(step_table.update().where(
+        step_table.c.job_name == old).values(job_name=new))
+    return changed
+
+
 # The runs
 
 def add_run(workflow, trigger, scheduled_time=None, requested_by=None,

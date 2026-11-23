@@ -44,6 +44,8 @@ from ...core.control import Control, output_table_names
 from ...core.runner import runner
 from ...core.scheduler import scheduler, upcoming, next_fires
 from ...transfer import catalogue as transfer_catalogue
+from ...transfer import group_store as transfer_group_store
+from ...transfer.groups import manager as transfer_groups
 from ...transfer import engine as transfer_engine
 from ...transfer import manager as transfer_manager
 from ...transfer import store as transfer_store
@@ -105,6 +107,7 @@ async def lifespan(app):
                        f'rapo/options.py: {", ".join(missing)}')
     runner.listeners.append(events.poke_scheduler)
     transfers.listeners.append(events.poke)
+    transfer_groups.listeners.append(events.poke)
     scheduler.listeners.append(events.poke_scheduler)
     job_manager.listeners.append(events.poke_jobs)
     workflow_manager.listeners.append(events.poke_jobs)
@@ -123,6 +126,7 @@ async def lifespan(app):
     logs.cleaner.start()
     await asyncio.to_thread(runner.start)
     await asyncio.to_thread(transfers.start)
+    await asyncio.to_thread(transfer_groups.start)
     await asyncio.to_thread(job_manager.start)
     await asyncio.to_thread(workflow_manager.start)
     scheduler.start()
@@ -142,6 +146,7 @@ async def lifespan(app):
     await asyncio.to_thread(scheduler.stop)
     await asyncio.to_thread(workflow_manager.stop)
     await asyncio.to_thread(job_manager.stop)
+    await asyncio.to_thread(transfer_groups.stop)
     await asyncio.to_thread(transfers.stop)
     await asyncio.to_thread(runner.stop)
     logs.cleaner.stop()
@@ -2550,8 +2555,13 @@ def get_transfers(rescan: bool = False):
     """Get every file transfer param: where it is kept (file or database),
     how it is scheduled (in rapo or in the crontab, with the next start and
     the scheduler's state) and its last run. `rescan` reads the crontab
-    again instead of reusing the last scan."""
+    again instead of reusing the last scan. Each param has its `groups`
+    (the groups it is a step of: position, next start of the group, when the
+    transfer is expected to start in it) and `next_starts`, every start it has
+    (its own schedule, each group, the crontab), the earliest first;
+    `groups_available` is false while the group tables are missing."""
     answer = transfer_answer(transfers.table, rescan)
+    transfer_groups.annotate(answer)
     answer['scheduler'] = {'state': scheduler.status()['state'],
                            'leader': scheduler.leader}
     answer['manager'] = transfers.status()
@@ -2660,15 +2670,36 @@ def move_transfer(name: str, target: str, confirm: bool = False):
 
 @api.delete('/delete-transfer',
          dependencies=[fastapi.Depends(require_transfers)])
-def delete_transfer(name: str):
-    """Delete a param, wherever it is kept, with its schedule."""
+def delete_transfer(name: str, confirm: bool = False):
+    """Delete a param, wherever it is kept, with its schedule. A param that
+    is a step of **groups** is refused (`409`, the message names them) until
+    `confirm` is true; then it is taken out of them (a group left without a
+    transfer is switched off). The answer lists them as `groups`."""
     name = transfer_answer(transfer_store.check_name, name)
-    if transfers.busy(name):
+    if transfers.busy(name) or transfer_groups.in_group_now(name):
         raise fastapi.HTTPException(
-            status_code=409, detail=f'Transfer {name} is running or waiting.')
+            status_code=409,
+            detail=f'Transfer {name} is running or waiting, or a step of a '
+                   'group that is.')
+    used = []
+    try:
+        used = [item['group_name'] for item
+                in transfer_group_store.read_membership().get(name, [])]
+    except transfer_group_store.StoreError:
+        pass
+    if used and not confirm:
+        raise fastapi.HTTPException(
+            status_code=409,
+            detail=f'Transfer {name} is a step of the group'
+                   f'{"" if len(used) == 1 else "s"} {", ".join(used)}: '
+                   'confirm to take it out of '
+                   f'{"it" if len(used) == 1 else "them"}.')
     transfer_answer(transfer_store.delete, name)
+    changed = transfer_answer(transfer_group_store.remove_param, name) \
+        if used else []
     transfers.invalidate()
-    return {'status': 200}
+    transfer_groups.invalidate()
+    return {'status': 200, 'groups': changed}
 
 
 @api.post('/save-transfer-schedule',
@@ -2733,6 +2764,146 @@ def get_transfer_run(run_id: int):
     if not row:
         raise fastapi.HTTPException(status_code=404,
                                     detail=f'Transfer run {run_id} not found')
+    return row
+
+
+# Groups of transfers
+
+@api.get('/get-transfer-groups',
+         dependencies=[fastapi.Depends(require_transfers)])
+def get_transfer_groups():
+    """Get every group of transfers: its transfers in the order they are
+    run, each with its own next start and the moment it is expected to start
+    inside the group (the start of the group plus what the transfers before
+    it took in their last run), the schedule and the next start of the group,
+    whether it is running and its last run."""
+    answer = transfer_answer(transfer_groups.table)
+    answer['scheduler'] = {'state': scheduler.status()['state'],
+                           'leader': scheduler.leader}
+    return answer
+
+
+@api.get('/get-transfer-group',
+         dependencies=[fastapi.Depends(require_transfers)])
+def get_transfer_group(name: str):
+    """Get one group of transfers as `get-transfer-groups` does."""
+    name = transfer_answer(transfer_group_store.check_name, name)
+    answer = transfer_answer(transfer_groups.table)
+    group = next((item for item in answer['groups']
+                  if item['group_name'] == name), None)
+    if not group:
+        raise fastapi.HTTPException(status_code=404,
+                                    detail=f'Group {name} not found.')
+    return group
+
+
+@api.post('/save-transfer-group',
+          dependencies=[fastapi.Depends(require_transfers)])
+def save_transfer_group(data: dict = fastapi.Body(...)):
+    """Create a group of transfers or change it. The body is {name, members
+    (the names of the transfers in the order they are run; a transfer is in a
+    group once), description, notify_email, status ('Y' or 'N'), overlap
+    ('skip', 'queue' or 'allow': what a start does while the group still
+    runs), schedule (the units of a control schedule {mday, wday, hour, min,
+    sec}; none: not scheduled), create}. What is not given stays as it was;
+    `create` refuses an existing name (`409`)."""
+    values = {key: data[key] for key in ('members', 'description',
+                                         'notify_email', 'status', 'overlap')
+              if key in data}
+    if 'schedule' in data:
+        try:
+            units = data['schedule']
+            config_json = transfer_manager.schedule_json(units) \
+                if units else None
+            if config_json:
+                schedule.parse(config_json)
+            values['schedule_config'] = config_json
+        except (ValueError, TypeError, AttributeError) as error:
+            raise fastapi.HTTPException(status_code=422, detail=str(error))
+    saved = transfer_answer(transfer_group_store.save_group,
+                            data.get('name'),
+                            create=bool(data.get('create')), **values)
+    transfer_groups.invalidate()
+    scheduler.refresh()
+    return {'status': 200, 'group_name': saved['group_name'],
+            'members': saved['members']}
+
+
+@api.delete('/delete-transfer-group',
+            dependencies=[fastapi.Depends(require_transfers)])
+def delete_transfer_group(name: str):
+    """Delete a group of transfers (the transfers stay); its runs stay in
+    the history until the retention ends. A group running or waiting is
+    refused (`409`)."""
+    name = transfer_answer(transfer_group_store.check_name, name)
+    if transfer_groups.busy(name):
+        raise fastapi.HTTPException(
+            status_code=409, detail=f'Group {name} is running or waiting.')
+    transfer_answer(transfer_group_store.delete_group, name)
+    transfer_groups.invalidate()
+    scheduler.refresh()
+    return {'status': 200}
+
+
+@api.post('/set-transfer-group-status',
+          dependencies=[fastapi.Depends(require_transfers)])
+def set_transfer_group_status(name: str, enabled: bool):
+    """Switch a group on or off: an off group is not scheduled, a run by hand
+    is still possible."""
+    transfer_answer(transfer_group_store.set_status, name, enabled)
+    transfer_groups.invalidate()
+    scheduler.refresh()
+    return {'status': 200}
+
+
+@api.post('/run-transfer-group',
+          dependencies=[fastapi.Depends(require_transfers)])
+def run_transfer_group(name: str):
+    """Start a group of transfers: its transfers run one after another in
+    the order of the group. `409` while the group runs or waits and its
+    `overlap` is `skip`."""
+    run_id = transfer_answer(transfer_groups.submit, name,
+                             transfer_group_store.MANUAL,
+                             requested_by=auth.current().requester)
+    events.poke()
+    return {'status': 200, 'run_id': run_id}
+
+
+@api.post('/cancel-transfer-group-run',
+          dependencies=[fastapi.Depends(require_transfers)])
+def cancel_transfer_group_run(run_id: int):
+    """Cancel a run of a group of this server: the transfer that goes is
+    canceled and the ones after it are not started."""
+    if not transfer_groups.cancel(run_id):
+        raise fastapi.HTTPException(
+            status_code=404,
+            detail='Not a run of this server, or it has finished.')
+    events.poke()
+    return {'status': 200}
+
+
+@api.get('/get-transfer-group-runs',
+         dependencies=[fastapi.Depends(require_transfers)])
+def get_transfer_group_runs(name: str | None = None,
+                            limit: int = fastapi.Query(100, ge=1, le=1000)):
+    """Get the runs of the groups of transfers, latest first, without their
+    log."""
+    return transfer_answer(transfer_group_store.read_runs, name, limit)
+
+
+@api.get('/get-transfer-group-run',
+         dependencies=[fastapi.Depends(require_transfers)])
+def get_transfer_group_run(run_id: int):
+    """Get one run of a group with its steps (`steps`: the transfer, its run
+    `transfer_run_id`, status, times and what the run of the transfer
+    transferred) and its whole log (`run_log`): what the group did, and under
+    each step the log of the run of its transfer. The runs of the transfers
+    have `group_run_id` in `get-transfer-runs`."""
+    row = transfer_answer(transfer_group_store.read_run, run_id)
+    if not row:
+        raise fastapi.HTTPException(
+            status_code=404, detail=f'Group run {run_id} not found')
+    row.pop('own_log', None)
     return row
 
 
@@ -2946,6 +3117,48 @@ def save_job(data: dict = fastapi.Body(...)):
     job_scheduler.refresh()
     events.poke_jobs()
     return present_job(saved)
+
+
+@api.post('/rename-job', dependencies=JOBS)
+def rename_job(name: str, new_name: str, confirm: bool = False):
+    """Call a job another name. The runs of the job go with it, and so do
+    the steps and the conditions of the workflows and the conditions of the
+    jobs that name it. A job running or waiting (or a step of a workflow that
+    is), and a name that is in use, are refused (`409`). A job that is a step
+    of workflows is refused (`409`, the message names them) until `confirm`
+    is true. The answer lists the workflows changed as `workflows`."""
+    used = jobs_in_workflows().get(name, [])
+    if used and not confirm:
+        raise fastapi.HTTPException(
+            status_code=409,
+            detail=f'Job {name} is a step of the workflow'
+                   f'{"" if len(used) == 1 else "s"} {", ".join(used)}: '
+                   'confirm to rename it in '
+                   f'{"it" if len(used) == 1 else "them"}.')
+    try:
+        busy = workflow_store.uses_job_now(name)
+    except job_store.StoreError:
+        busy = []
+    if busy:
+        raise fastapi.HTTPException(
+            status_code=409,
+            detail=f'Job {name} is a step of the workflow'
+                   f'{"" if len(busy) == 1 else "s"} {", ".join(busy)} '
+                   'that is running or waiting.')
+    renamed = job_answer(job_store.rename_job, name, new_name)
+    changed = []
+    try:
+        changed = workflow_store.rename_job(name, renamed['job_name'])
+    except job_store.StoreError as error:
+        # The workflow tables may be missing; nothing is lost then.
+        if error.status != 503:
+            raise fastapi.HTTPException(status_code=error.status,
+                                        detail=str(error))
+    job_scheduler.refresh()
+    events.poke_jobs()
+    answer = present_job(renamed)
+    answer['workflows'] = changed
+    return answer
 
 
 @api.delete('/delete-job', dependencies=JOBS)

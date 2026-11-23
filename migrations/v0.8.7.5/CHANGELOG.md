@@ -148,6 +148,23 @@ time and are withdrawn. An installation on one of them already has the schema of
 1. **API.** `get-external-tasks` (area *Jobs*, View) and `external` in `get-jobs` and `get-job`
    ([docs/api](../../docs/api/README.md#started-outside-rapo)).
 
+### Groups of transfers and the name of a job
+
+1. **Groups of transfers.** A group is a named list of transfers that are run one after another, in the order of the
+   list, by a schedule of its own (the *Groups* tab of the *Transfers* tab). A transfer that fails stops the group, with
+   one mail for the whole group; the group has its own history, with the steps and a log that holds the log of every
+   transfer under its step, and each transfer run of a group is also in the runs of the transfer. When a group starts
+   while it still runs it is skipped, waits or goes along (`overlap`). Each transfer shows all its next starts (its own
+   schedule, each group, the crontab) and each group when its transfers are expected to start. New tables
+   `rapo_transfer_group*` and the column `rapo_transfer_run.group_run_id`, new routes `*-transfer-group*`. See
+   [docs/transfer-groups.md](../../docs/transfer-groups.md).
+1. **The same transfer never runs twice at once, and a second start waits.** A transfer started while it runs (by hand,
+   by its schedule, by the crontab or by a group) is no longer refused with `409`: it waits behind the run that goes and
+   starts when that has ended, in the order the runs were started.
+1. **A job can be renamed.** The *Name* field of the job editor can be changed; the runs of the job, the steps and the
+   conditions of the workflows and the conditions of other jobs that wait for it follow the new name (route
+   `rename-job`). A job that runs or waits, or is a step of a workflow that does, is refused.
+
 ### Other changes
 
 1. **`rapo.ini` keeps its line endings when saved from the UI.** On Windows the first change made on the

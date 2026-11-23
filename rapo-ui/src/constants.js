@@ -125,6 +125,7 @@ export const TRIGGER_TYPES = {
   CASCADE: { label: "Cascade", icon: "fas fa-sitemap", color: "deep-purple-4" },
   UPSTREAM: { label: "Chain", icon: "fas fa-link", color: "cyan-8" },
   WORKFLOW: { label: "Workflow", icon: "fas fa-stream", color: "indigo-5" },
+  GROUP: { label: "Group", icon: "fas fa-layer-group", color: "indigo-5" },
 };
 
 export const TRIGGER_TYPE_OPTIONS = Object.entries(TRIGGER_TYPES).map(([value, type]) => ({ label: type.label, value }));

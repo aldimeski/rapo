@@ -4,8 +4,9 @@ Every transfer run, scheduled or started from the UI, is recorded at once in
 `rapo_transfer_run`, waits in a FIFO queue for one of `[TRANSFER]
 parallelism` slots and is performed in its own spawned OS process, so that a
 stuck SFTP connection or a huge file can not hold the server. One param runs
-once at a time on a server. A supervisor thread collects the outcome of every
-process and stops it when it exceeds `[TRANSFER] timeout`.
+once at a time on a server: a second run of it waits for the first. A supervisor
+thread collects the outcome of every process and stops it when it exceeds
+`[TRANSFER] timeout`.
 
 The schedule of a param is kept like the one of a control (rapo/core/
 schedule.py). It is served by the scheduler of the server holding the lease
@@ -54,11 +55,14 @@ def setting(name):
 class Job:
     """Represents one transfer run owned by the manager."""
 
-    def __init__(self, run_id, name, text, trigger):
+    def __init__(self, run_id, name, text, trigger, group_run_id=None):
         self.run_id = run_id
         self.name = name
         self.text = text
         self.trigger = trigger
+        self.group_run_id = group_run_id
+        # Set when the run has ended, however it ended.
+        self.done = th.Event()
         self.queued = dt.datetime.now()
         self.started = None
         self.process = None
@@ -69,7 +73,8 @@ class Job:
     def describe(self):
         """Get the job for the status report."""
         return {'run_id': self.run_id, 'param_name': self.name,
-                'trigger_type': self.trigger, 'queued': self.queued,
+                'trigger_type': self.trigger,
+                'group_run_id': self.group_run_id, 'queued': self.queued,
                 'started': self.started,
                 'pid': self.process.pid if self.process else None}
 
@@ -199,12 +204,23 @@ class TransferManager:
 
     # Running
 
-    def submit(self, name, trigger, scheduled_time=None, requested_by=None):
+    def submit(self, name, trigger, scheduled_time=None, requested_by=None,
+               group_run_id=None):
         """Initiate a run of the param and queue it.
 
-        Returns the ID of the run. A param already waiting or running is
-        refused, so a slow transfer is never run twice at once.
+        Returns the ID of the run. A run of a param that is already running
+        or waiting is queued behind it: it is not started before the runs of
+        the same param ahead of it have ended, so a transfer is never run
+        twice at once and its runs follow one another in the order they were
+        started.
         """
+        return self.enqueue(name, trigger, scheduled_time, requested_by,
+                            group_run_id).run_id
+
+    def enqueue(self, name, trigger, scheduled_time=None, requested_by=None,
+                group_run_id=None):
+        """Initiate a run as `submit` does, and get the run (`Job`), whose
+        `done` is set when it has ended."""
         if not self.active:
             raise store.StoreError('The transfer manager is not running.',
                                    503)
@@ -215,22 +231,21 @@ class TransferManager:
             raise store.StoreError(
                 f'Param {name} is a file with LogDatabase:Y, which only a '
                 'param kept in the database can have.', 400)
-        with self.condition:
-            busy = [job for job in list(self.pending) + self.running
-                    if job.name == name]
-        if busy:
-            raise store.StoreError(f'Transfer {name} is already running or '
-                                   'waiting.', 409)
         run_id = store.add_run(name, trigger, scheduled_time=scheduled_time,
-                               requested_by=requested_by, runner=self.name)
-        job = Job(run_id, name, text, trigger)
+                               requested_by=requested_by, runner=self.name,
+                               group_run_id=group_run_id)
+        job = Job(run_id, name, text, trigger, group_run_id)
         with self.condition:
+            ahead = sum(1 for other in list(self.pending) + self.running
+                        if other.name == name)
             self.pending.append(job)
             self.condition.notify_all()
         logger.info(f'Transfer {name} queued as run {run_id} ({trigger}), '
-                    f'{len(self.pending)} in queue')
+                    f'{len(self.pending)} in queue'
+                    + (f', after {ahead} run{"" if ahead == 1 else "s"} of '
+                       'the same transfer' if ahead else ''))
         self._notify()
-        return run_id
+        return job
 
     def cancel(self, run_id):
         """Cancel a run of this manager, False when it is not its own."""
@@ -268,16 +283,27 @@ class TransferManager:
             return any(job.name == name
                        for job in list(self.pending) + self.running)
 
+    def _eligible(self):
+        """Get the first waiting run that can start now: there is a free
+        slot and no run of the same param is going. Called with the
+        condition held."""
+        if len(self.running) >= self.capacity:
+            return None
+        going = {job.name for job in self.running}
+        return next((job for job in self.pending
+                     if job.name not in going), None)
+
     def _dispatch(self):
         while True:
             with self.condition:
                 while True:
                     if not self.active:
                         return
-                    if self.pending and len(self.running) < self.capacity:
+                    job = self._eligible()
+                    if job:
                         break
                     self.condition.wait()
-                job = self.pending.popleft()
+                self.pending.remove(job)
                 self.running.append(job)
             try:
                 self._spawn(job)
@@ -410,6 +436,8 @@ class TransferManager:
             store.update_run(job.run_id, **values)
         except Exception:
             logger.error()
+        finally:
+            job.done.set()
 
     def _notify(self):
         for listener in self.listeners:

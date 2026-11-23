@@ -7,6 +7,7 @@ JSON document: `{"version": 1, "steps": [{"job": "a"}, {"job": "b"}],
 docs/jobs-design.md, section 11.
 """
 
+import json
 import re
 
 from . import catalogue
@@ -137,3 +138,23 @@ def remove_job(definition, name):
              if not (isinstance(step, dict) and step.get('job') == name)]
     found = len(steps) != len(definition.get('steps') or [])
     return dict(definition, steps=steps), found
+
+
+def rename_job(definition, old, new):
+    """Get the definition with the job `old` called `new` in its steps and
+    in the targets of its condition, and whether any was there."""
+    found = False
+    steps = []
+    for step in definition.get('steps') or []:
+        if isinstance(step, dict) and step.get('job') == old:
+            step = dict(step, job=new)
+            found = True
+        steps.append(step)
+    definition = dict(definition, steps=steps)
+    condition = definition.get('condition')
+    if isinstance(condition, dict):
+        condition = json.loads(json.dumps(condition))
+        if definitions.rename_target(condition, 'job', old, new):
+            found = True
+            definition['condition'] = condition
+    return definition, found

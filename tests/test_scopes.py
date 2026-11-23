@@ -84,8 +84,8 @@ class ScopesTests(unittest.TestCase):
         for name in ('run-job', 'cancel-job-run', 'set-job-status',
                      'job-scheduler-start', 'job-scheduler-stop'):
             self.assertEqual(needs(name), ('jobs', 'operate'), msg=name)
-        for name in ('save-job', 'delete-job', 'save-job-schedule',
-                     'check-job'):
+        for name in ('save-job', 'rename-job', 'delete-job',
+                     'save-job-schedule', 'check-job'):
             self.assertEqual(needs(name), ('jobs', 'edit'), msg=name)
 
     def test_a_token_reaches_the_levels_below_its_own(self):

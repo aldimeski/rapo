@@ -411,6 +411,44 @@ def set_status(name, enabled):
     logger.info(f'Job {name} switched {"on" if enabled else "off"}')
 
 
+def rename_job(old, new):
+    """Call a job another name. Its runs (and their history) follow it, and
+    so do the targets of the conditions of the other jobs that wait for it;
+    the workflows are the business of `workflow_store.rename_job`. A job
+    with a run waiting or running is refused, and so is a name in use.
+    Returns the renamed job."""
+    job = get_job(old)
+    new = check_name(new)
+    old = job['job_name']
+    if new == old:
+        return job
+    if has_active(job['job_id']):
+        raise StoreError(f'Job {old} is running or waiting.', 409)
+    taken = read_job(new)
+    if taken and taken['job_id'] != job['job_id']:
+        raise StoreError(f'Job {new} already exists.', 409)
+    moment = now()
+    _execute(job_table.update().where(
+        job_table.c.job_id == job['job_id']).values(
+        job_name=new, updated_date=moment, updated_by=user()))
+    _execute(run_table.update().where(
+        run_table.c.job_id == job['job_id']).values(job_name=new))
+    for row in _execute(sa.select(job_table.c.job_id,
+                                  job_table.c.definition),
+                        as_table=True):
+        try:
+            definition = json.loads(_text(row['definition']))
+        except ValueError:
+            continue
+        if definitions.rename_target(definition.get('condition'), 'job',
+                                     old, new):
+            _execute(job_table.update().where(
+                job_table.c.job_id == row['job_id']).values(
+                definition=definitions.dumps(definition)))
+    logger.info(f'Job {old} renamed {new}')
+    return read_job(new)
+
+
 def delete_job(name):
     """Delete a job and its versions. Its runs stay in the history until
     the retention deletes them. A job with a run waiting or running is

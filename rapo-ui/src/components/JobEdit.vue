@@ -73,8 +73,7 @@
                   outlined
                   label="Name"
                   maxlength="128"
-                  :readonly="!isNew"
-                  :hint="isNew ? 'Letters, digits, dots, hyphens and underscores; it can not be changed later' : 'The name of a job is not changed'" />
+                  :hint="nameHint" />
                 <q-input v-model="form.description" outlined label="Description" maxlength="500" />
                 <q-input v-model="form.notify_email" outlined label="E-mail on failure" maxlength="500" :hint="mailHint" />
                 <q-toggle v-model="form.status" true-value="Y" false-value="N" label="On" />
@@ -289,6 +288,8 @@ export default {
       catalogue: null,
       form: emptyForm(null),
       savedJson: "",
+      // The name the job has in the database; the form's name differs from it when the job is to be renamed.
+      originalName: "",
       // The workflows that have the job as a step.
       workflows: [],
       // What starts the main task of the job outside rapo (the last scan of the crontab or the Task Scheduler).
@@ -321,6 +322,15 @@ export default {
     },
     isNew() {
       return this.name === "new";
+    },
+    renamed() {
+      return !this.isNew && this.form.name.trim() !== this.originalName;
+    },
+    nameHint() {
+      if (this.isNew) {
+        return "Letters, digits, dots, hyphens and underscores; it can be changed later";
+      }
+      return this.renamed ? `Saving renames the job from ${this.originalName}; its runs, workflows and conditions that name it follow` : "Letters, digits, dots, hyphens and underscores";
     },
     canFreeSql() {
       return this.$store.getters.canFreeSql;
@@ -379,7 +389,7 @@ export default {
           this.ready = true;
           return;
         }
-        this.loadJob(await api("get-job", { params: { name: this.name } }));
+        this.loadJob(await api("get-job", { params: { name: this.originalName || this.name } }));
         this.ready = true;
       } catch (error) {
         if (error.status === 404 && !this.isNew) {
@@ -407,6 +417,7 @@ export default {
         scheduleOn: Boolean(config) && Boolean(scheduleUnits(config)),
         schedule: config && scheduleUnits(config) ? parseSchedule(config) : defaultSchedule(),
       };
+      this.originalName = job.job_name;
       this.version = job.version;
       this.workflows = job.workflows || [];
       this.external = job.external || [];
@@ -437,7 +448,7 @@ export default {
         this.tab = tab;
         return false;
       };
-      if (this.isNew && !NAME_PATTERN.test(this.form.name.trim())) {
+      if ((this.isNew || this.renamed) && !NAME_PATTERN.test(this.form.name.trim())) {
         return complain("A job name has 1-128 letters, digits, dots, hyphens or underscores, and starts with a letter or a digit.", "general");
       }
       const problems = formProblems(this.form.def);
@@ -480,7 +491,17 @@ export default {
     async submit(mode) {
       this.saving = true;
       let saved;
+      let renamedTo = null;
       try {
+        if (this.renamed) {
+          if (!(await this.confirmRename())) {
+            this.saving = false;
+            return false;
+          }
+          const answer = await api("rename-job", { method: "POST", params: { name: this.originalName, new_name: this.form.name.trim(), confirm: this.workflows.length ? "true" : null } });
+          this.originalName = answer.job_name;
+          renamedTo = answer.job_name;
+        }
         saved = await api("save-job", { method: "POST", body: { ...this.payload(), create: this.isNew } });
       } catch (error) {
         // Stay on the page so unsaved edits are not lost; the server's word names what is wrong.
@@ -505,10 +526,30 @@ export default {
       this.versions = null;
       this.$q.notify({ type: "positive", message: `Job ${name} was saved.` });
       // A new job moves to its own URL (the form already holds it).
-      if (wasNew) {
+      if (wasNew || (renamedTo && renamedTo !== this.name)) {
         await this.$router.replace({ name: "edit-job", params: { name } });
       }
       return true;
+    },
+    // Renaming touches the workflows that have the job, so it is asked first when there are any.
+    confirmRename() {
+      if (!this.workflows.length) {
+        return Promise.resolve(true);
+      }
+      const many = this.workflows.length !== 1;
+      return new Promise((resolve) => {
+        this.$q
+          .dialog({
+            title: "Rename a job that is in workflows",
+            message: `${this.originalName} is a step of the workflow${many ? "s" : ""} ${this.workflows.join(", ")}. Renaming it changes ${many ? "their steps" : "its step"} (a new version of each).`,
+            cancel: true,
+            persistent: true,
+            ok: { label: "Rename", color: "deep-orange", flat: true },
+          })
+          .onOk(() => resolve(true))
+          .onCancel(() => resolve(false))
+          .onDismiss(() => resolve(false));
+      });
     },
     // The server holds no version to conflict with: the job as last read.
     async reloadSaved() {
